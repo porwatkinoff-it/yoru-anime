@@ -44,6 +44,7 @@ struct RootView: View {
             #if DEBUG
             if let t = QA.value("--tab").flatMap(Int.init) { store.tab = t }
             if QA.has("--open-schedule") { store.homePath = [.schedule] }
+            if let id = QA.value("--open-id").flatMap(Int.init) { store.homePath = [.title(AnimeItem(["id": id]))] }
             if QA.has("--open-first") { Task { await store.loadShelf(Shelves.airing); if let f = store.shelves[Shelves.airing]?.first { store.homePath = [.title(f, resume: QA.has("--resume"))] } } }
             #endif
         }
@@ -53,7 +54,7 @@ extension View {
     func routes() -> some View {
         navigationDestination(for: Route.self) { r in
             switch r {
-            case .title(let item, let resume): DetailView(item: item, autoResume: resume)
+            case .title(let item, let resume): TitleView(item: item, autoResume: resume)
             case .shelf(let s): ShelfGridView(shelf: s)
             case .schedule: ScheduleView()
             }
@@ -213,7 +214,7 @@ struct EmptyState: View {
 struct HomeView: View {
     @EnvironmentObject var store: AnimeStore
     @State var login = false
-    var continueItems: [AnimeItem] { store.history.filter { store.lastEpisode($0) != 0 }.prefix(15).map { $0 } }
+    var continueItems: [AnimeItem] { store.history.filter { store.lastEpisode($0) != 0 && !store.finished($0) }.prefix(15).map { $0 } }
     var fresh: [AnimeItem] { store.favorites.filter { store.hasNew($0) } }
     var body: some View {
         ScrollView {
@@ -528,9 +529,17 @@ struct ProgressRing: View {
 
 // MARK: Страница аниме
 
+// Переход между сезонами меняет тайтл на месте, а «Назад» ведёт туда, откуда пришли — как на сайте Anime 365.
+struct TitleView: View {
+    @State var item: AnimeItem
+    var autoResume = false
+    var body: some View { DetailView(item: item, autoResume: autoResume) { item = $0 }.id(item.id) }
+}
 struct DetailView: View {
     let item: AnimeItem
     var autoResume = false
+    var switchSeason: (AnimeItem) -> Void = { _ in }
+    @State var seasons: [Season] = []
     @EnvironmentObject var store: AnimeStore
     @EnvironmentObject var downloads: DownloadCenter
     @State var full: AnimeItem?
@@ -562,6 +571,14 @@ struct DetailView: View {
                 if !shown.genres.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 8) { ForEach(shown.genres) { g in NavigationLink(value: Route.shelf(Shelves.genre(g.id, g.title))) { Chip(title: g.title) }.buttonStyle(.plain) } }.padding(.horizontal, 18) }
                 }
+                if !seasons.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Сезоны").font(.system(size: 19, weight: .bold)).foregroundStyle(Night.text).padding(.horizontal, 18)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) { ForEach(seasons) { s in Button { if !s.current { switchSeason(s.item) } } label: { Chip(title: s.label, selected: s.current) }.buttonStyle(.plain).accessibilityLabel(s.item.title) } }.padding(.horizontal, 18)
+                        }
+                    }
+                }
                 episodeList
                 if let g = shown.genres.first { RemoteShelf(shelf: Shelf(title: "Похожие", params: ["genres": shown.genres.prefix(2).map { "\($0.id)" }.joined(separator: ",")]), exclude: item.id).id(g.id) }
             }.padding(.bottom, 24)
@@ -570,6 +587,7 @@ struct DetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task { if episodes.isEmpty { await load() } }
+        .task { seasons = await store.seasons(item) }
         .sheet(item: $chooser) { c in
             TranslationSheet(episode: c.episode, translations: $translations, remembered: store.rememberedTranslation(item), needsLogin: store.token.isEmpty, status: $status, download: c.download, all: c.all, quality: downloads.quality) { t in
                 Task { if c.download { await download(t, c.episode, all: c.all) } else { await play(t, c.episode) } }

@@ -36,6 +36,7 @@ struct AnimeItem: Identifiable, Hashable {
     static func == (a: AnimeItem, b: AnimeItem) -> Bool { a.id == b.id }
     func hash(into h: inout Hasher) { h.combine(id) }
 }
+struct Season: Identifiable { let id: Int; let label: String; let current: Bool; let item: AnimeItem }
 struct Genre: Hashable, Identifiable { let id: Int; let title: String }
 struct Episode: Identifiable, Hashable {
     let id: Int; let title: String; let number: Double; let uploaded: Date?; let trailer: Bool
@@ -125,6 +126,7 @@ enum Vault {
     }
     let session: URLSession = { let c = URLSessionConfiguration.ephemeral; c.timeoutIntervalForRequest = 25; c.urlCache = nil; return URLSession(configuration: c) }()
     let base = "https://smotret-anime.app"
+    var seasonCache: [Int: [Season]] = [:]
     init() { favorites = restore("favorites"); history = restore("history") }
     func restore(_ key: String) -> [AnimeItem] { guard let a = UserDefaults.standard.array(forKey: key) as? [Data] else { return [] }; return a.compactMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }.map(AnimeItem.init) }
     func save(_ key: String, _ items: [AnimeItem]) { UserDefaults.standard.set(items.map(\.raw), forKey: key); UserDefaults.standard.set(HistoryState.now(), forKey: "t-" + key) }
@@ -133,7 +135,7 @@ enum Vault {
     func request(_ path: String, _ params: [String: String] = [:], authenticated: Bool = false) async throws -> Any {
         var c = URLComponents(string: base + "/api/" + path)!
         var p = params; if authenticated { guard !token.isEmpty else { throw APIError(message: "Войдите в аккаунт Anime 365") }; p["access_token"] = token }
-        c.queryItems = p.map { URLQueryItem(name: $0.key, value: $0.value) }
+        c.queryItems = (c.queryItems ?? []) + p.map { URLQueryItem(name: $0.key, value: $0.value) }
         var r = URLRequest(url: c.url!); r.setValue("NightAnime/1.0 (iOS)", forHTTPHeaderField: "User-Agent"); r.cachePolicy = .reloadIgnoringLocalCacheData
         let data: Data
         do { (data, _) = try await session.data(for: r) } catch { throw APIError(message: "Не удалось подключиться к Anime 365. Проверьте интернет и повторите.") }
@@ -189,7 +191,42 @@ enum Vault {
         #endif
         let d = try await request("series/\(item.id)") as? [String: Any] ?? [:]
         let episodes = (d["episodes"] as? [[String: Any]] ?? []).filter { ($0["isActive"] as? Int ?? 0) == 1 }.map(Episode.init).sorted { ($0.trailer ? 1 : 0, $0.number) < ($1.trailer ? 1 : 0, $1.number) }  // трейлеры — в конце
+        // Последняя серия вышедшего целиком сезона: когда она просмотрена, сезон уходит из «Продолжить просмотр».
+        if !d.isEmpty { let fin = (d["isAiring"] as? NSNumber)?.intValue == 0 ? episodes.last(where: { !$0.trailer })?.id ?? 0 : 0; if fin == 0 { UserDefaults.standard.removeObject(forKey: "final-\(item.id)") } else { UserDefaults.standard.set(fin, forKey: "final-\(item.id)") } }
         return (d.isEmpty ? item : AnimeItem(d), episodes)
+    }
+    func finished(_ item: AnimeItem) -> Bool { let f = UserDefaults.standard.integer(forKey: "final-\(item.id)"); return f != 0 && isDone(f) }
+    // Сезоны франшизы, как в блоке связанных частей на странице аниме на сайте Anime 365.
+    // В API этого блока нет: читаем открытую страницу каталога и берём ТВ-сериалы основной линии.
+    func seasons(_ item: AnimeItem) async -> [Season] {
+        if let cached = seasonCache[item.id] { return cached }
+        #if DEBUG
+        if QA.value("--fixtures") != nil { return [] }
+        #endif
+        var r = URLRequest(url: URL(string: "https://smotret-anime.co/catalog/\(item.id)")!); r.setValue("NightAnime/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+        guard let (data, _) = try? await session.data(for: r), let html = String(data: data, encoding: .utf8) else { return [] }
+        let pattern = #"<li class="m-connections-list__item( m-connections-list__item_current)?"><a href="/catalog/[^"]*?-(\d+)">.*?</a>\s*<span class="m-connections-list__type">(.*?)</span>[^<]*(?:<span class="m-connections-list__type">(.*?)</span>,\s*)?<span class="m-connections-list__year">(\d*)</span>"#
+        guard let rx = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators) else { return [] }
+        let ns = html as NSString; var order: [Int] = [], years: [Int: Int] = [:], current = 0
+        func group(_ m: NSTextCheckingResult, _ i: Int) -> String? { m.range(at: i).location == NSNotFound ? nil : ns.substring(with: m.range(at: i)) }
+        for m in rx.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
+            let cur = group(m, 1) != nil, rel = group(m, 4)
+            guard group(m, 3) == "ТВ сериал", cur || rel == nil || ["основная история", "продолжение", "предыстория"].contains(rel!), let sid = Int(group(m, 2) ?? "") else { continue }
+            if cur { current = sid }
+            if years[sid] == nil { order.append(sid); years[sid] = Int(group(m, 5) ?? "") ?? 0 }
+        }
+        guard order.count > 1, current != 0 else { seasonCache[item.id] = []; return [] }
+        let query = "series?fields=" + Self.cardFields + ",descriptions" + order.map { "&id[]=\($0)" }.joined()
+        guard let list = try? await request(query) as? [[String: Any]] else { return [] }
+        let items = Dictionary(list.map { (($0["id"] as? NSNumber)?.intValue ?? 0, AnimeItem($0)) }, uniquingKeysWith: { a, _ in a })
+        // Порядок как на сайте, но по годам выхода: сайт показывает дерево, а не хронологию.
+        let sorted = order.filter { items[$0] != nil }.enumerated().sorted { (years[$0.1] == 0 ? Int.max : years[$0.1]!, $0.0) < (years[$1.1] == 0 ? Int.max : years[$1.1]!, $1.0) }.map(\.1)
+        let result = sorted.enumerated().map { i, sid -> Season in
+            let a = items[sid]!; let n = a.title.range(of: #"(\d+)\s*сезон"#, options: .regularExpression).map { String(a.title[$0]).components(separatedBy: CharacterSet.decimalDigits.inverted).joined() }
+            return Season(id: sid, label: n.map { "\($0) сезон" } ?? (i == 0 ? "1 сезон" : a.title), current: sid == current, item: a)
+        }
+        let out = result.count > 1 ? result : []
+        seasonCache[item.id] = out; return out
     }
     func episodes(_ item: AnimeItem) async throws -> [Episode] { try await details(item).1 }
     // Расписание: аниме, которые сейчас выходят, по дню недели последней вышедшей серии.

@@ -59,7 +59,6 @@ public class MainActivity extends Activity {
   showTab(0);
   if(getIntent().getBooleanExtra("continue",false))continueWatching();
   io.execute(()->{State.checkNewEpisodes(this,3600*1000L);runOnUiThread(this::refreshIfHome);});
-  if(Updater.due(this))checkUpdates(false);
   if(getIntent().getBooleanExtra("development_test_subscriber",false))replaySubscriber();
   if(getIntent().hasExtra("development_test_video")){Intent test=new Intent(this,PlayerActivity.class);test.putStringArrayListExtra("urls",new ArrayList<>(Arrays.asList(getIntent().getStringExtra("development_test_video"))));test.putStringArrayListExtra("labels",new ArrayList<>(Arrays.asList("Тест ASS")));test.putExtra("subtitles",getIntent().getStringExtra("development_test_subtitles"));test.putExtra("title","Проверка русских ASS-субтитров");test.putExtra("key","subtitle-test-"+System.nanoTime());test.putExtra("hasNext",true);startActivity(test);}
  }
@@ -86,9 +85,10 @@ public class MainActivity extends Activity {
   return b;
  }
  TextView chip(String title,boolean selected,Runnable click){
-  TextView t=bold(title,14,selected?ON_ACCENT:TEXT);t.setGravity(Gravity.CENTER);t.setPadding(dp(14),0,dp(14),0);t.setFocusable(true);t.setDefaultFocusHighlightEnabled(false);t.setClickable(true);
-  t.setBackground(selected?bg(ACCENT,999):bg(RAISED,999,1,STROKE));
-  t.setOnFocusChangeListener((v,f)->{if(tv){t.setBackground(f||selected?bg(ACCENT,999):bg(RAISED,999,1,STROKE));t.setTextColor(f||selected?ON_ACCENT:TEXT);}});
+  // На ТВ выбранный вариант обведён, а залит только тот, на котором фокус пульта — иначе их не отличить.
+  TextView t=bold(title,14,selected&&!tv?ON_ACCENT:TEXT);t.setGravity(Gravity.CENTER);t.setPadding(dp(14),0,dp(14),0);t.setFocusable(true);t.setDefaultFocusHighlightEnabled(false);t.setClickable(true);
+  Runnable paint=()->{boolean f=tv&&t.isFocused();t.setBackground(f||selected&&!tv?bg(ACCENT,999):selected?bg(RAISED,999,2,ACCENT):bg(RAISED,999,1,STROKE));t.setTextColor(f||selected&&!tv?ON_ACCENT:TEXT);};paint.run();
+  t.setOnFocusChangeListener((v,f)->paint.run());
   t.setOnClickListener(v->click.run());return t;
  }
  int scoreColor(double s){return s>=8?SCORE_HIGH:s>=6.5?SCORE_MID:SCORE_LOW;}
@@ -163,6 +163,7 @@ public class MainActivity extends Activity {
    View sp=new View(this);tabs.addView(sp,new LinearLayout.LayoutParams(dp(28),1));
    for(int i=0;i<names.length;i++){int n=i;TextView t=chip(names[i],tab==i,()->showTab(n));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(42));lp.rightMargin=dp(10);tabs.addView(t,lp);}
    tabs.addView(new View(this),new LinearLayout.LayoutParams(0,1,1));
+   if(available!=null){Updater.Release r=available;TextView u=chip("↑  Обновить до "+r.version,true,()->offerUpdate(r));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(42));lp.rightMargin=dp(10);tabs.addView(u,lp);}
    TextView acc=chip(Api.token(this).isEmpty()?"Войти":"Аккаунт",false,this::login);tabs.addView(acc,new LinearLayout.LayoutParams(-2,dp(42)));
    return;
   }
@@ -292,7 +293,7 @@ public class MainActivity extends Activity {
   // «Продолжить просмотр» — как у Netflix: постер с полоской прогресса, нажатие сразу запускает серию.
   JSONArray history=State.list(this,"history");
   ArrayList<JSONObject> cont=new ArrayList<>();
-  for(int i=0;i<history.length()&&cont.size()<15;i++){JSONObject o=history.optJSONObject(i);if(o!=null&&State.episodes(this).getInt("last-"+o.optInt("id"),0)!=0)cont.add(o);}
+  for(int i=0;i<history.length()&&cont.size()<15;i++){JSONObject o=history.optJSONObject(i);if(o!=null&&State.episodes(this).getInt("last-"+o.optInt("id"),0)!=0&&!State.finished(this,o.optInt("id")))cont.add(o);}
   if(!cont.isEmpty()){LinearLayout items=shelf(body,"Продолжить просмотр",null);for(JSONObject o:cont){int last=State.episodes(this).getInt("last-"+o.optInt("id"),0);addCard(items,card(o,posterWidth(),State.fraction(this,last),lastEpisodeTitle(o),false));}}
   JSONArray fav=State.list(this,"favorites");
   ArrayList<JSONObject> fresh=new ArrayList<>();for(int i=0;i<fav.length();i++){JSONObject o=fav.optJSONObject(i);if(o!=null&&State.hasNew(this,o.optInt("id")))fresh.add(o);}
@@ -503,11 +504,13 @@ public class MainActivity extends Activity {
   TextView moreText=bold("Ещё",14,MUTED);moreText.setPadding(side(),dp(4),side(),dp(4));moreText.setVisibility(View.GONE);body.addView(moreText);
   moreText.setOnClickListener(v->{boolean open=about.getMaxLines()==3;about.setMaxLines(open?Integer.MAX_VALUE:3);moreText.setText(open?"Свернуть":"Ещё");});
   HorizontalScrollView gs=new HorizontalScrollView(this);gs.setHorizontalScrollBarEnabled(false);LinearLayout genreRow=row();genreRow.setPadding(side(),dp(10),side(),dp(4));gs.addView(genreRow);body.addView(gs);
+  LinearLayout seasonBox=column();body.addView(seasonBox);
   TextView epTitle=bold("Серии",19,TEXT);epTitle.setPadding(side(),dp(18),side(),dp(8));body.addView(epTitle);
   LinearLayout list=column();body.addView(list);
   LinearLayout similar=column();body.addView(similar);
   Button allButton=all;
   int gen=generation;
+  io.execute(()->{List<Seasons.Season> ss=Seasons.load(item.optInt("id"));if(!ss.isEmpty())runOnUiThread(()->{if(gen==generation)renderSeasons(seasonBox,ss);});});
   io.execute(()->{try{
    JSONObject d=(JSONObject)Api.get(this,"series/"+item.optInt("id"),Api.params(),false);
    JSONArray eps=d.optJSONArray("episodes");ArrayList<JSONObject> es=new ArrayList<>();
@@ -516,6 +519,7 @@ public class MainActivity extends Activity {
    es.sort(Comparator.<JSONObject>comparingInt(e->"preview".equals(e.optString("episodeType"))?1:0).thenComparingDouble(e->e.optDouble("episodeInt")));
    runOnUiThread(()->{if(gen!=generation)return;
     episodes=es;State.seen(this,item.optInt("id"),es.size());
+    int fin=0;if(d.optInt("isAiring")==0)for(JSONObject e:es)if(!"preview".equals(e.optString("episodeType")))fin=e.optInt("id");State.rememberFinal(this,item.optInt("id"),fin);
     String text=description(d);about.setText(text);about.setVisibility(text.isEmpty()?View.GONE:View.VISIBLE);
     about.post(()->moreText.setVisibility(about.getLayout()!=null&&about.getLayout().getEllipsisCount(Math.max(0,about.getLineCount()-1))>0?View.VISIBLE:View.GONE));
     metaLine.setText(meta(d,join(d.optString("typeTitle"),d.optInt("year")>0?""+d.optInt("year"):"")));season.setText(join(d.optString("season"),es.isEmpty()?"":es.size()+" эп."));
@@ -540,6 +544,14 @@ public class MainActivity extends Activity {
   for(int i=0;i<episodes.size();i++)if(episodes.get(i).optInt("id")==last&&!"preview".equals(episodes.get(i).optString("episodeType")))return State.episodes(this).getBoolean("done-"+last,false)&&i+1<episodes.size()&&!"preview".equals(episodes.get(i+1).optString("episodeType"))?episodes.get(i+1):episodes.get(i);
   return episodes.get(0);
  }
+ // Сезоны, как на сайте Anime 365: выбранный сезон открывается вместо текущего, «Назад» ведёт туда же, откуда пришли.
+ void renderSeasons(LinearLayout box,List<Seasons.Season> ss){
+  box.removeAllViews();
+  TextView h=bold("Сезоны",19,TEXT);h.setPadding(side(),dp(18),side(),dp(8));box.addView(h);
+  HorizontalScrollView hs=new HorizontalScrollView(this);hs.setHorizontalScrollBarEnabled(false);hs.setClipToPadding(false);LinearLayout r=row();r.setPadding(side(),dp(2),side(),dp(2));hs.addView(r);box.addView(hs);
+  for(Seasons.Season s:ss){TextView c=chip(s.label,s.current,()->{if(!s.current)switchSeason(s.item);});c.setContentDescription(s.title);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(tv?42:38));lp.rightMargin=dp(8);r.addView(c,lp);}
+ }
+ void switchSeason(JSONObject item){if(stack.isEmpty())return;autoResume=false;Entry e=new Entry(()->detailScreen(item));stack.set(stack.size()-1,e);generation++;stopTicker();e.show.run();}
  JSONObject nextEpisode(int id){if(episodes==null)return null;for(int i=0;i<episodes.size()-1;i++)if(episodes.get(i).optInt("id")==id)return episodes.get(i+1);return null;}
  void renderDetailActions(JSONObject item,Button play,FrameLayout progress,Button all,TextView status){
   JSONObject e=resumeEpisode(item);
@@ -845,8 +857,9 @@ public class MainActivity extends Activity {
   return r;
  }
  // ───────────── Обновления с GitHub ─────────────
- Updater.Release pendingUpdate;
- void checkUpdates(boolean manual){io.execute(()->{try{Updater.Release r=Updater.check(this);runOnUiThread(()->{if(isFinishing())return;if(r==null){if(manual)alert("У вас последняя версия — "+Updater.current(this));return;}offerUpdate(r);});}catch(Exception e){if(manual)runOnUiThread(()->alert(e.getMessage()));}});}
+ Updater.Release pendingUpdate,available;
+ // Найденное обновление остаётся кнопкой в верхней панели ТВ, даже если нажали «Позже».
+ void checkUpdates(boolean manual){io.execute(()->{try{Updater.Release r=Updater.check(this);runOnUiThread(()->{if(isFinishing())return;if(r==null){if(manual)alert("У вас последняя версия — "+Updater.current(this));return;}boolean fresh=available==null||!available.version.equals(r.version);available=r;if(tv)renderTabs();if(manual||fresh)offerUpdate(r);});}catch(Exception e){if(manual)runOnUiThread(()->alert(e.getMessage()));}});}
  void offerUpdate(Updater.Release r){
   String notes=r.notes.isEmpty()?"":"\n\n"+(r.notes.length()>1200?r.notes.substring(0,1200)+"…":r.notes);
   new AlertDialog.Builder(this).setTitle("Доступна Yoru Anime "+r.version).setMessage("Сейчас установлена "+Updater.current(this)+(r.size>0?". Размер "+Downloads.size(r.size):"")+"."+notes)
@@ -874,7 +887,7 @@ public class MainActivity extends Activity {
  void continueWatching(){try{SharedPreferences lp=State.lastPlay(this);if(!lp.contains("item"))return;JSONObject item=new JSONObject(lp.getString("item","{}")),ep=new JSONObject(lp.getString("episode","{}"));autoPlay=ep.optInt("id");if(tab!=0)showTab(0);openDetail(item,false);}catch(Exception ignored){}}
 
  @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(intent.hasExtra("development_test_video")||intent.getBooleanExtra("development_test_subscriber",false))recreate();else if(intent.getBooleanExtra("continue",false))continueWatching();}
- @Override protected void onResume(){super.onResume();if(pendingUpdate!=null&&Updater.canInstall(this)){Updater.Release r=pendingUpdate;pendingUpdate=null;startUpdate(r);}if(!tv)Sync.run(this,()->{if(current==null)refresh();});}
+ @Override protected void onResume(){super.onResume();if(Updater.due(this))checkUpdates(false);if(pendingUpdate!=null&&Updater.canInstall(this)){Updater.Release r=pendingUpdate;pendingUpdate=null;startUpdate(r);}if(!tv)Sync.run(this,()->{if(current==null)refresh();});}
  @Override protected void onPause(){super.onPause();if(!stack.isEmpty()&&scroll!=null)stack.get(stack.size()-1).scrollY=scroll.getScrollY();}
  @Override protected void onActivityResult(int req,int res,Intent data){
   super.onActivityResult(req,res,data);if(req!=7||data==null)return;
