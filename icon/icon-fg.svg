@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><g transform="translate(512 530) scale(0.66) translate(-512 -540)">
+  <clipPath id="almond"><path d="M152,540 Q512,250 872,540 Q512,830 152,540Z"/></clipPath>
+  <path d="M152,540 Q512,250 872,540 Q512,830 152,540Z" fill="#E8F5E9"/>
+  <g clip-path="url(#almond)">
+    <circle cx="512" cy="540" r="182" fill="#2E7D32"/>
+    <circle cx="512" cy="540" r="150" fill="#43A047"/>
+    <circle cx="512" cy="590" r="120" fill="#66BB6A" opacity="0.55"/>
+    <circle cx="512" cy="540" r="92" fill="#0B3D10"/>
+    <path d="M482,488 L572,540 L482,592Z" fill="#FFFFFF"/>
+    <circle cx="430" cy="455" r="34" fill="#FFFFFF" opacity="0.95"/>
+    <circle cx="590" cy="630" r="14" fill="#FFFFFF" opacity="0.8"/>
+  </g>
+  <path d="M120,560 Q300,330 512,318 Q740,310 912,505" fill="none" stroke="#0B2E0E" stroke-width="40" stroke-linecap="round"/>
+  <path d="M836,440 L930,388 M872,478 L962,450 M790,404 L860,330" stroke="#0B2E0E" stroke-width="30" stroke-linecap="round"/>
+  <path d="M250,690 Q512,820 774,690" fill="none" stroke="#0B2E0E" stroke-width="16" stroke-linecap="round" opacity="0.55"/>
+</g><path d="M700,278 Q707.28,322.72 752,330 Q707.28,337.28 700,382 Q692.72,337.28 648,330 Q692.72,322.72 700,278Z" fill="#FF9800"/><path d="M770,368 Q773.08,386.92 792,390 Q773.08,393.08 770,412 Q766.92,393.08 748,390 Q766.92,386.92 770,368Z" fill="#FFCC80"/></svg>

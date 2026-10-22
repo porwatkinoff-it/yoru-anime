@@ -1,0 +1,38 @@
+feature,area,priority,original,clone,notes
+Hero billboard with backdrop and one-tap play,home,must,yes,yes,Netflix/Кинопоиск
+Continue watching row with progress bars,home,must,yes,yes,Netflix; resumes with remembered translation
+New episodes of my titles row,home,must,yes,yes,Crunchyroll; uses existing count/known check
+Airing now row,home,must,yes,yes,
+Best of the year row,home,should,yes,yes,Кинопоиск подборки; API year filter
+Movies row,home,should,yes,yes,API type=movie
+Genre shelves on home,home,should,yes,yes,Netflix rows by genre; API genres filter
+Search with genre chips,search,must,yes,yes,
+Title page with backdrop rating genres description,title,must,yes,yes,Кинопоиск
+Rating colour-coded by score,title,should,yes,yes,Кинопоиск
+Primary Play/Continue N button,title,must,yes,yes,Netflix
+Episode list with per-episode progress,title,must,yes,yes,Netflix
+Similar titles row,title,should,yes,yes,Кинопоиск «Похожие»; first genre
+Remembered sub/dub choice,player,must,yes,yes,exists since 1.4
+Skip opening button,player,must,yes,yes,manual in bottom row
+Next episode with countdown,player,must,yes,yes,
+Playback speed,player,should,yes,yes,
+My list (favorites),library,must,yes,yes,
+History,library,must,yes,yes,
+Download single episode,downloads,must,yes,yes,phones only
+Download whole season,downloads,should,yes,yes,
+Downloads screen grouped by title with progress,downloads,must,yes,yes,
+Play downloaded episode offline with subtitles,downloads,must,yes,yes,"; offline playback checked on iPhone sim and Android emulator with a test video, subtitles path not checked with a real episode"
+Delete downloads,downloads,must,yes,yes,
+Download quality setting,downloads,should,yes,yes,
+Wi-Fi only downloads,downloads,should,yes,yes,
+Auto-delete watched downloads,downloads,could,yes,yes,Netflix smart downloads (delete part)
+Downloads keep going in background,downloads,must,yes,yes,iOS background URLSession / Android DownloadManager
+Offline mode shows downloads,downloads,should,yes,partial,home shows an offline card with a button to Downloads; Downloads tab works offline
+Release schedule by weekday,schedule,should,yes,yes,Crunchyroll simulcast calendar; from last upload dates
+Watch history shared phone↔TV,sync,should,no,yes,Night-only feature (1.6)
+Continue on TV home screen,sync,could,no,yes,Night TV tile
+Profiles,account,could,yes,skip,Anime 365 has one account per user
+Kids mode,account,could,yes,skip,not needed for a personal anime app
+Trailers autoplay in hero,home,could,yes,skip,Anime 365 has no trailer streams
+Ratings and reviews by users,social,could,yes,skip,no backend of our own
+Downloads on TV,downloads,could,no,skip,box is always online and short on storage

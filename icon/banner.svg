@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1280" viewBox="0 0 1280 1280"><g transform="translate(0 280)"><defs><linearGradient id="bg" x1="0" y1="0" x2="0.6" y2="1">
+  <stop offset="0" stop-color="#388E3C"/><stop offset="0.55" stop-color="#1B5E20"/><stop offset="1" stop-color="#0F3D13"/></linearGradient>
+  <radialGradient id="glow" cx="0.3" cy="0.2" r="0.7"><stop offset="0" stop-color="#A5D6A7" stop-opacity="0.35"/><stop offset="1" stop-color="#A5D6A7" stop-opacity="0"/></radialGradient></defs><rect width="1280" height="720" fill="url(#bg)"/><rect width="1280" height="720" fill="url(#glow)"/><g transform="translate(330 360) scale(0.62) translate(-512 -540)">
+  <clipPath id="almond"><path d="M152,540 Q512,250 872,540 Q512,830 152,540Z"/></clipPath>
+  <path d="M152,540 Q512,250 872,540 Q512,830 152,540Z" fill="#E8F5E9"/>
+  <g clip-path="url(#almond)">
+    <circle cx="512" cy="540" r="182" fill="#2E7D32"/>
+    <circle cx="512" cy="540" r="150" fill="#43A047"/>
+    <circle cx="512" cy="590" r="120" fill="#66BB6A" opacity="0.55"/>
+    <circle cx="512" cy="540" r="92" fill="#0B3D10"/>
+    <path d="M482,488 L572,540 L482,592Z" fill="#FFFFFF"/>
+    <circle cx="430" cy="455" r="34" fill="#FFFFFF" opacity="0.95"/>
+    <circle cx="590" cy="630" r="14" fill="#FFFFFF" opacity="0.8"/>
+  </g>
+  <path d="M120,560 Q300,330 512,318 Q740,310 912,505" fill="none" stroke="#0B2E0E" stroke-width="40" stroke-linecap="round"/>
+  <path d="M836,440 L930,388 M872,478 L962,450 M790,404 L860,330" stroke="#0B2E0E" stroke-width="30" stroke-linecap="round"/>
+  <path d="M250,690 Q512,820 774,690" fill="none" stroke="#0B2E0E" stroke-width="16" stroke-linecap="round" opacity="0.55"/>
+</g><path d="M560,134 Q566.44,173.56 606,180 Q566.44,186.44 560,226 Q553.56,186.44 514,180 Q553.56,173.56 560,134Z" fill="#FF9800"/><path d="M615,208 Q617.8,225.2 635,228 Q617.8,230.8 615,248 Q612.2,230.8 595,228 Q612.2,225.2 615,208Z" fill="#FFCC80"/><text x="640" y="350" font-family="Roboto, Helvetica Neue, Arial, sans-serif" font-weight="700" font-size="112" fill="#FFFFFF">Yoru</text><text x="640" y="480" font-family="Roboto, Helvetica Neue, Arial, sans-serif" font-weight="700" font-size="112" fill="#E8F5E9">Anime</text><rect x="644" y="512" width="150" height="10" rx="5" fill="#FF9800"/></g></svg>

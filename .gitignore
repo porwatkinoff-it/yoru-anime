@@ -1,0 +1,23 @@
+# Сборки и временные файлы
+*.log
+.DS_Store
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+ios/build/
+ios/NightAnime.xcodeproj/
+sim-build/
+sim-release/
+ipa-stage/
+icon/render/
+# VLCKit (1,8 ГБ) скачивается отдельно — см. README
+reference/
+# Логи и записи с реальных просмотров — личные, в репозиторий не попадают
+qa/*
+qa/fixtures/*
+!qa/subtitles.ass
+# Ключи подписи
+*.keystore
+*.jks
+!qa/fixtures/README.md
