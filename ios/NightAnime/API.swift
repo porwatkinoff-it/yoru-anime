@@ -45,6 +45,11 @@ struct Episode: Identifiable, Hashable {
         id = (d["id"] as? NSNumber)?.intValue ?? 0; title = d["episodeFull"] as? String ?? "Серия"; number = (d["episodeInt"] as? NSNumber)?.doubleValue ?? 0
         uploaded = (d["firstUploadedDateTime"] as? String).flatMap { Episode.dates.date(from: $0) }
     }
+    // «Серии» без трейлеров и спецвыпусков (SP): только они считаются в «Серии · N» и в досмотренности.
+    static func regular(_ list: [Episode]) -> Set<Int> {
+        let tv = list.contains { $0.kind == "tv" }
+        return Set(list.filter { tv ? $0.kind == "tv" : $0.kind != "preview" && $0.kind != "special" }.map(\.id))
+    }
     // Время на сайте — московское.
     static let dates: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"; f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Europe/Moscow"); return f }()
 }
@@ -190,15 +195,17 @@ enum Vault {
         if QA.value("--fixtures") != nil { return (Fixtures.detailed(item), Fixtures.episodes()) }
         #endif
         let d = try await request("series/\(item.id)") as? [String: Any] ?? [:]
-        let episodes = (d["episodes"] as? [[String: Any]] ?? []).filter { ($0["isActive"] as? Int ?? 0) == 1 }.map(Episode.init).sorted { ($0.trailer ? 1 : 0, $0.number) < ($1.trailer ? 1 : 0, $1.number) }  // трейлеры — в конце
+        let all = (d["episodes"] as? [[String: Any]] ?? []).filter { ($0["isActive"] as? Int ?? 0) == 1 }.map(Episode.init)
+        let regular = Episode.regular(all)
+        let episodes = all.sorted { (regular.contains($0.id) ? 0 : 1, $0.number) < (regular.contains($1.id) ? 0 : 1, $1.number) }  // трейлеры и спецвыпуски — в конце
         if !d.isEmpty { rememberEpisodes(item.id, episodes) }
         return (d.isEmpty ? item : AnimeItem(d), episodes)
     }
     // «Серии» без трейлеров и спецвыпусков (SP). Досмотренным считается аниме, у которого просмотрена
     // последняя из вышедших серий — пропущенные в начале не мешают. Тогда оно уходит из «Продолжить просмотр».
     func rememberEpisodes(_ id: Int, _ episodes: [Episode]) {
-        let tv = episodes.contains { $0.kind == "tv" }
-        let last = episodes.last { tv ? $0.kind == "tv" : $0.kind != "preview" && $0.kind != "special" }
+        let regular = Episode.regular(episodes)
+        let last = episodes.last { regular.contains($0.id) }
         UserDefaults.standard.set(last?.id ?? 0, forKey: "final-\(id)"); UserDefaults.standard.set(Date(), forKey: "final-ts-\(id)")
     }
     func finished(_ item: AnimeItem) -> Bool { let f = UserDefaults.standard.integer(forKey: "final-\(item.id)"); return f != 0 && isDone(f) }

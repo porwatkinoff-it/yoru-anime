@@ -607,7 +607,7 @@ struct DetailView: View {
                 VStack(alignment: .leading, spacing: 7) {
                     Text(shown.title).font(.system(size: Metrics.regular ? 30 : 22, weight: .heavy)).foregroundStyle(Night.text).lineLimit(4).minimumScaleFactor(0.8)
                     HStack(spacing: 8) { ScoreChip(item: shown); Text([shown.kind, shown.year > 0 ? "\(shown.year)" : ""].filter { !$0.isEmpty }.joined(separator: " · ")).foregroundStyle(Night.muted) }.font(.system(size: 13))
-                    if !shown.season.isEmpty || !episodes.isEmpty { Text([shown.season, episodes.isEmpty ? "" : "\(episodes.count) эп."].filter { !$0.isEmpty }.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(Night.muted) }
+                    if !shown.season.isEmpty || !episodes.isEmpty { Text([shown.season, episodes.isEmpty ? "" : "\(Episode.regular(episodes).count) эп."].filter { !$0.isEmpty }.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(Night.muted) }
                 }
             }.padding(.horizontal, 18)
         }.frame(height: 330)
@@ -635,10 +635,14 @@ struct DetailView: View {
     }
     var episodeList: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(episodes.isEmpty ? "Серии" : "Серии · \(episodes.count)").font(.system(size: 19, weight: .bold)).foregroundStyle(Night.text)
+            let regular = Episode.regular(episodes)
+            Text(regular.isEmpty ? "Серии" : "Серии · \(regular.count)").font(.system(size: 19, weight: .bold)).foregroundStyle(Night.text)
             if busy && episodes.isEmpty { ProgressView().frame(maxWidth: .infinity).padding() }
             if !busy && episodes.isEmpty { Button("Повторить") { Task { await load() } }.buttonStyle(PillStyle()) }
-            LazyVStack(spacing: 6) { ForEach(episodes) { ep in EpisodeRow(ep: ep, current: ep.id == resume?.id && store.lastEpisode(item) != 0, open: { start(ep) }, download: { downloadTapped(ep) }) } }
+            // Трейлеры и спецвыпуски — отдельным блоком после серий.
+            LazyVStack(alignment: .leading, spacing: 6) { ForEach(episodes) { ep in
+                if !regular.isEmpty, !regular.contains(ep.id), ep.id == episodes.first(where: { !regular.contains($0.id) })?.id { Text("Трейлеры и спецвыпуски").font(.system(size: 17, weight: .bold)).foregroundStyle(Night.text).padding(.top, 10) }
+                EpisodeRow(ep: ep, current: ep.id == resume?.id && store.lastEpisode(item) != 0, open: { start(ep) }, download: { downloadTapped(ep) }) } }
         }.padding(.horizontal, 18)
     }
     func next(after id: Int) -> Episode? { guard let i = episodes.firstIndex(where: { $0.id == id }), i + 1 < episodes.count else { return nil }; return episodes[i + 1] }

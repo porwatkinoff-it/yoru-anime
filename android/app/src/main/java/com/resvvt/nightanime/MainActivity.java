@@ -518,17 +518,18 @@ public class MainActivity extends Activity {
    JSONObject d=(JSONObject)Api.get(this,"series/"+item.optInt("id"),Api.params(),false);
    JSONArray eps=d.optJSONArray("episodes");ArrayList<JSONObject> es=new ArrayList<>();
    if(eps!=null)for(int i=0;i<eps.length();i++){JSONObject e=eps.getJSONObject(i);if(e.optInt("isActive")==1)es.add(e);}
-   // Трейлеры — в конце списка, как у Crunchyroll: сначала сами серии по порядку.
-   es.sort(Comparator.<JSONObject>comparingInt(e->"preview".equals(e.optString("episodeType"))?1:0).thenComparingDouble(e->e.optDouble("episodeInt")));
+   // Трейлеры и спецвыпуски — в конце списка, как у Crunchyroll: сначала сами серии по порядку.
+   Set<Integer> regular=new HashSet<>(State.regular(es));
+   es.sort(Comparator.<JSONObject>comparingInt(e->regular.contains(e.optInt("id"))?0:1).thenComparingDouble(e->e.optDouble("episodeInt")));
    runOnUiThread(()->{if(gen!=generation)return;
     episodes=es;State.seen(this,item.optInt("id"),es.size());
     State.rememberEpisodes(this,item.optInt("id"),es);
     String text=description(d);about.setText(text);about.setVisibility(text.isEmpty()?View.GONE:View.VISIBLE);
     about.post(()->moreText.setVisibility(about.getLayout()!=null&&about.getLayout().getEllipsisCount(Math.max(0,about.getLineCount()-1))>0?View.VISIBLE:View.GONE));
-    metaLine.setText(meta(d,join(d.optString("typeTitle"),d.optInt("year")>0?""+d.optInt("year"):"")));season.setText(join(d.optString("season"),es.isEmpty()?"":es.size()+" эп."));
+    metaLine.setText(meta(d,join(d.optString("typeTitle"),d.optInt("year")>0?""+d.optInt("year"):"")));season.setText(join(d.optString("season"),regular.isEmpty()?"":regular.size()+" эп."));
     JSONArray g=d.optJSONArray("genres");
     if(g!=null)for(int i=0;i<g.length();i++){JSONObject o=g.optJSONObject(i);TextView c=chip(o.optString("title"),false,()->push(()->gridScreen(o.optString("title"),Api.params("genres",""+o.optInt("id")))));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(36));lp.rightMargin=dp(8);genreRow.addView(c,lp);}
-    epTitle.setText(es.isEmpty()?"Серии":"Серии · "+es.size());
+    epTitle.setText(regular.isEmpty()?"Серии":"Серии · "+regular.size());
     if(es.isEmpty())status.setText("На сайте пока нет серий этого аниме");
     renderDetailActions(item,play,playProgress,allButton,status);
     renderEpisodes(item,list,status);
@@ -573,7 +574,10 @@ public class MainActivity extends Activity {
   JSONObject resume=resumeEpisode(item);int last=State.episodes(this).getInt("last-"+item.optInt("id"),0);
   java.text.SimpleDateFormat parse=new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",Locale.US),show=new java.text.SimpleDateFormat("d MMM yyyy",Locale.forLanguageTag("ru"));
   View focus=null;
+  Set<Integer> regular=new HashSet<>(State.regular(episodes));boolean extras=false;
   for(JSONObject e:episodes){
+   // В «Серии · N» считаются только серии; трейлеры и спецвыпуски — отдельным блоком ниже.
+   if(!extras&&!regular.isEmpty()&&!regular.contains(e.optInt("id"))){extras=true;TextView h=bold("Трейлеры и спецвыпуски",17,TEXT);h.setPadding(side(),dp(14),side(),dp(8));list.addView(h);}
    int id=e.optInt("id");boolean done=State.episodes(this).getBoolean("done-"+id,false),cur=last!=0&&resume!=null&&resume.optInt("id")==id;float f=State.fraction(this,id);
    LinearLayout r=row();r.setPadding(dp(10),dp(8),dp(10),dp(8));
    LinearLayout main=row();main.setId(View.generateViewId());main.setFocusable(true);main.setDefaultFocusHighlightEnabled(false);main.setClickable(true);main.setContentDescription(e.optString("episodeFull"));
