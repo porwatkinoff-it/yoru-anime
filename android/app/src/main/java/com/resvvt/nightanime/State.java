@@ -16,8 +16,13 @@ final class State {
  // Доля просмотренного — для полосок прогресса в списке серий и на полке «Продолжить».
  static void saveFraction(Context c,int episode,long t,long length){if(episode!=0&&length>0)progress(c).edit().putFloat("watch-"+episode,Math.min(1f,(float)t/length)).apply();}
  static float fraction(Context c,int episode){return episodes(c).getBoolean("done-"+episode,false)?1f:progress(c).getFloat("watch-"+episode,0f);}
- // Последняя серия вышедшего целиком сезона: когда она просмотрена, сезон уходит из «Продолжить просмотр».
- static void rememberFinal(Context c,int sid,int ep){SharedPreferences.Editor e=episodes(c).edit();if(ep==0)e.remove("final-"+sid);else e.putInt("final-"+sid,ep);e.apply();}
+ // «Серии» без трейлеров и спецвыпусков (SP): по ним решается, досмотрено ли аниме.
+ static List<Integer> regular(List<JSONObject> eps){boolean tv=false;for(JSONObject e:eps)tv|="tv".equals(e.optString("episodeType"));List<Integer> ids=new ArrayList<>();
+  for(JSONObject e:eps){String t=e.optString("episodeType");if(e.optInt("isActive",1)==1&&(tv?"tv".equals(t):!"preview".equals(t)&&!"special".equals(t)))ids.add(e.optInt("id"));}return ids;}
+ // Досмотренным считается аниме, у которого просмотрена последняя из вышедших серий (пропущенные в начале не мешают).
+ static void rememberEpisodes(Context c,int sid,List<JSONObject> eps){List<Integer> ids=regular(eps);episodes(c).edit().putInt("final-"+sid,ids.isEmpty()?0:ids.get(ids.size()-1)).putLong("final-ts-"+sid,now()).apply();}
+ // Список серий старше 12 часов перечитывается: у онгоинга могла выйти новая серия, и аниме вернётся на полку.
+ static boolean knows(Context c,int sid){return now()-episodes(c).getLong("final-ts-"+sid,0)<12*3600*1000L;}
  static boolean finished(Context c,int sid){int f=episodes(c).getInt("final-"+sid,0);return f!=0&&episodes(c).getBoolean("done-"+f,false);}
  static JSONArray list(Context c,String key){try{return new JSONArray(library(c).getString(key,"[]"));}catch(Exception e){return new JSONArray();}}
  static void saveList(Context c,String key,JSONArray a,long t){library(c).edit().putString(key,a.toString()).putLong("t-"+key,t).apply();}
@@ -29,8 +34,6 @@ final class State {
   for(Map.Entry<String,?> e:episodes(c).getAll().entrySet()){String k=e.getKey();
    if(k.startsWith("done-")&&Boolean.TRUE.equals(e.getValue()))done.put(Integer.parseInt(k.substring(5)));
    else if(k.startsWith("last-")){String sid=k.substring(5);series.put(sid,new JSONObject().put("last",e.getValue()).put("tr",episodes(c).getString("tr-"+sid,"")).put("t",episodes(c).getLong("stamp-"+sid,0)));}}
-  JSONObject finals=new JSONObject();for(Map.Entry<String,?> e:episodes(c).getAll().entrySet())if(e.getKey().startsWith("final-")&&e.getValue() instanceof Integer)finals.put(e.getKey().substring(6),e.getValue());
-  o.put("finals",finals);
   o.put("series",series);o.put("done",done);
   JSONObject positions=new JSONObject();
   for(Map.Entry<String,?> e:progress(c).getAll().entrySet())if(e.getKey().startsWith("position-")&&e.getValue() instanceof Long)positions.put(e.getKey(),new JSONObject().put("v",e.getValue()).put("t",progress(c).getLong("ts-"+e.getKey(),0)));
@@ -45,7 +48,6 @@ final class State {
   SharedPreferences.Editor ep=episodes(c).edit();JSONObject series=in.optJSONObject("series");
   if(series!=null)for(Iterator<String> it=series.keys();it.hasNext();){String sid=it.next();JSONObject s=series.optJSONObject(sid);if(s!=null&&s.optLong("t")>episodes(c).getLong("stamp-"+sid,0)){ep.putInt("last-"+sid,s.optInt("last"));if(!s.optString("tr").isEmpty())ep.putString("tr-"+sid,s.optString("tr"));ep.putLong("stamp-"+sid,s.optLong("t"));}}
   JSONArray done=in.optJSONArray("done");if(done!=null)for(int i=0;i<done.length();i++)ep.putBoolean("done-"+done.optInt(i),true);
-  JSONObject finals=in.optJSONObject("finals");if(finals!=null)for(Iterator<String> it=finals.keys();it.hasNext();){String sid=it.next();if(!episodes(c).contains("final-"+sid))ep.putInt("final-"+sid,finals.optInt(sid));}
   ep.apply();
   SharedPreferences.Editor pr=progress(c).edit();JSONObject positions=in.optJSONObject("positions");
   if(positions!=null)for(Iterator<String> it=positions.keys();it.hasNext();){String k=it.next();JSONObject p=positions.optJSONObject(k);if(p!=null&&k.startsWith("position-")&&p.optLong("t")>progress(c).getLong("ts-"+k,0))pr.putLong(k,p.optLong("v")).putLong("ts-"+k,p.optLong("t"));}

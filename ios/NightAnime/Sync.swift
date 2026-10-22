@@ -20,14 +20,13 @@ enum HistoryState {
             let items = (d.array(forKey: k) as? [Data] ?? []).compactMap { try? JSONSerialization.jsonObject(with: $0) }
             o[k] = ["t": int64("t-" + k), "items": items]
         }
-        var series: [String: Any] = [:], done: [Int] = [], positions: [String: Any] = [:], finals: [String: Any] = [:]
+        var series: [String: Any] = [:], done: [Int] = [], positions: [String: Any] = [:]
         for (k, v) in d.dictionaryRepresentation() {
             if k.hasPrefix("done-"), (v as? Bool) == true, let id = Int(k.dropFirst(5)) { done.append(id) }
             else if k.hasPrefix("last-"), let sid = Optional(String(k.dropFirst(5))) { series[sid] = ["last": number(v), "tr": d.string(forKey: "tr-" + sid) ?? "", "t": int64("stamp-" + sid)] }
-            else if k.hasPrefix("final-") { finals[String(k.dropFirst(6))] = number(v) }
             else if k.hasPrefix("position-") { positions[k] = ["v": number(v), "t": int64("ts-" + k)] }
         }
-        o["series"] = series; o["done"] = done; o["positions"] = positions; o["finals"] = finals
+        o["series"] = series; o["done"] = done; o["positions"] = positions
         if let item = loadJSON("lp-item") {
             o["lastPlay"] = ["item": item, "episode": loadJSON("lp-episode") ?? [:], "translation": loadJSON("lp-translation") ?? [:], "t": int64("lp-t")]
         }
@@ -50,7 +49,6 @@ enum HistoryState {
             d.set(number(s["t"]), forKey: "stamp-" + sid)
         }
         for id in i["done"] as? [Any] ?? [] { d.set(true, forKey: "done-\(number(id))") }
-        for (sid, ep) in i["finals"] as? [String: Any] ?? [:] where d.object(forKey: "final-" + sid) == nil { d.set(Int(number(ep)), forKey: "final-" + sid) }
         for (k, value) in i["positions"] as? [String: Any] ?? [:] {
             guard k.hasPrefix("position-"), let p = value as? [String: Any], number(p["t"]) > int64("ts-" + k) else { continue }
             d.set(Int(number(p["v"])), forKey: k); d.set(number(p["t"]), forKey: "ts-" + k)

@@ -294,6 +294,9 @@ public class MainActivity extends Activity {
   JSONArray history=State.list(this,"history");
   ArrayList<JSONObject> cont=new ArrayList<>();
   for(int i=0;i<history.length()&&cont.size()<15;i++){JSONObject o=history.optJSONObject(i);if(o!=null&&State.episodes(this).getInt("last-"+o.optInt("id"),0)!=0&&!State.finished(this,o.optInt("id")))cont.add(o);}
+  // Для аниме, страницу которого на этом устройстве ещё не открывали, список серий подгружается в фоне.
+  ArrayList<Integer> unknown=new ArrayList<>();for(int i=0;i<history.length()&&unknown.size()<20;i++){JSONObject o=history.optJSONObject(i);int sid=o==null?0:o.optInt("id");if(sid!=0&&State.episodes(this).getInt("last-"+sid,0)!=0&&!State.knows(this,sid))unknown.add(sid);}
+  if(!unknown.isEmpty())io.execute(()->{boolean changed=false;for(int sid:unknown){try{boolean was=State.finished(this,sid);JSONObject d=(JSONObject)Api.get(this,"series/"+sid,Api.params(),false);JSONArray eps=d.optJSONArray("episodes");ArrayList<JSONObject> es=new ArrayList<>();if(eps!=null)for(int i=0;i<eps.length();i++)es.add(eps.getJSONObject(i));State.rememberEpisodes(this,sid,es);changed|=was!=State.finished(this,sid);}catch(Exception ignored){}}if(changed)runOnUiThread(this::refreshIfHome);});
   if(!cont.isEmpty()){LinearLayout items=shelf(body,"Продолжить просмотр",null);for(JSONObject o:cont){int last=State.episodes(this).getInt("last-"+o.optInt("id"),0);addCard(items,card(o,posterWidth(),State.fraction(this,last),lastEpisodeTitle(o),false));}}
   JSONArray fav=State.list(this,"favorites");
   ArrayList<JSONObject> fresh=new ArrayList<>();for(int i=0;i<fav.length();i++){JSONObject o=fav.optJSONObject(i);if(o!=null&&State.hasNew(this,o.optInt("id")))fresh.add(o);}
@@ -519,7 +522,7 @@ public class MainActivity extends Activity {
    es.sort(Comparator.<JSONObject>comparingInt(e->"preview".equals(e.optString("episodeType"))?1:0).thenComparingDouble(e->e.optDouble("episodeInt")));
    runOnUiThread(()->{if(gen!=generation)return;
     episodes=es;State.seen(this,item.optInt("id"),es.size());
-    int fin=0;if(d.optInt("isAiring")==0)for(JSONObject e:es)if(!"preview".equals(e.optString("episodeType")))fin=e.optInt("id");State.rememberFinal(this,item.optInt("id"),fin);
+    State.rememberEpisodes(this,item.optInt("id"),es);
     String text=description(d);about.setText(text);about.setVisibility(text.isEmpty()?View.GONE:View.VISIBLE);
     about.post(()->moreText.setVisibility(about.getLayout()!=null&&about.getLayout().getEllipsisCount(Math.max(0,about.getLineCount()-1))>0?View.VISIBLE:View.GONE));
     metaLine.setText(meta(d,join(d.optString("typeTitle"),d.optInt("year")>0?""+d.optInt("year"):"")));season.setText(join(d.optString("season"),es.isEmpty()?"":es.size()+" эп."));

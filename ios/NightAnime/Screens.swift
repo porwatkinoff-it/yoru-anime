@@ -33,13 +33,13 @@ struct RootView: View {
             NavigationStack { LibraryView().routes() }.tabItem { Label("Моё", systemImage: "heart.fill") }.tag(2)
             NavigationStack { DownloadsView().routes() }.tabItem { Label("Загрузки", systemImage: "arrow.down.circle.fill") }.tag(3)
         }
-        .task { await store.refreshAccount(); await store.sync(); await store.checkNewEpisodes(); if Updater.due { update = try? await Updater.check() } }
+        .task { await store.refreshAccount(); await store.sync(); await store.refreshFinished(); await store.checkNewEpisodes(); if Updater.due { update = try? await Updater.check() } }
         // Новая версия на GitHub: iPhone не ставит IPA сам — открываем страницу релиза.
         .alert(update.map { "Доступна Yoru Anime \($0.version)" } ?? "", isPresented: Binding(get: { update != nil }, set: { if !$0 { update = nil } }), presenting: update) { r in
             Button("Скачать на GitHub") { openURL(r.page) }
             Button("Позже", role: .cancel) {}
         } message: { r in Text("Сейчас установлена \(Updater.current).\(r.notes.isEmpty ? "" : "\n\n" + String(r.notes.prefix(600)))") }
-        .onChange(of: phase) { if phase == .active { Task { await store.sync() } } }
+        .onChange(of: phase) { if phase == .active { Task { await store.sync(); await store.refreshFinished() } } }
         .onAppear {
             #if DEBUG
             if let t = QA.value("--tab").flatMap(Int.init) { store.tab = t }

@@ -39,9 +39,9 @@ struct AnimeItem: Identifiable, Hashable {
 struct Season: Identifiable { let id: Int; let label: String; let current: Bool; let item: AnimeItem }
 struct Genre: Hashable, Identifiable { let id: Int; let title: String }
 struct Episode: Identifiable, Hashable {
-    let id: Int; let title: String; let number: Double; let uploaded: Date?; let trailer: Bool
+    let id: Int; let title: String; let number: Double; let uploaded: Date?; let trailer: Bool; let kind: String
     init(_ d: [String: Any]) {
-        trailer = d["episodeType"] as? String == "preview"
+        kind = d["episodeType"] as? String ?? ""; trailer = kind == "preview"
         id = (d["id"] as? NSNumber)?.intValue ?? 0; title = d["episodeFull"] as? String ?? "Серия"; number = (d["episodeInt"] as? NSNumber)?.doubleValue ?? 0
         uploaded = (d["firstUploadedDateTime"] as? String).flatMap { Episode.dates.date(from: $0) }
     }
@@ -191,11 +191,24 @@ enum Vault {
         #endif
         let d = try await request("series/\(item.id)") as? [String: Any] ?? [:]
         let episodes = (d["episodes"] as? [[String: Any]] ?? []).filter { ($0["isActive"] as? Int ?? 0) == 1 }.map(Episode.init).sorted { ($0.trailer ? 1 : 0, $0.number) < ($1.trailer ? 1 : 0, $1.number) }  // трейлеры — в конце
-        // Последняя серия вышедшего целиком сезона: когда она просмотрена, сезон уходит из «Продолжить просмотр».
-        if !d.isEmpty { let fin = (d["isAiring"] as? NSNumber)?.intValue == 0 ? episodes.last(where: { !$0.trailer })?.id ?? 0 : 0; if fin == 0 { UserDefaults.standard.removeObject(forKey: "final-\(item.id)") } else { UserDefaults.standard.set(fin, forKey: "final-\(item.id)") } }
+        if !d.isEmpty { rememberEpisodes(item.id, episodes) }
         return (d.isEmpty ? item : AnimeItem(d), episodes)
     }
+    // «Серии» без трейлеров и спецвыпусков (SP). Досмотренным считается аниме, у которого просмотрена
+    // последняя из вышедших серий — пропущенные в начале не мешают. Тогда оно уходит из «Продолжить просмотр».
+    func rememberEpisodes(_ id: Int, _ episodes: [Episode]) {
+        let tv = episodes.contains { $0.kind == "tv" }
+        let last = episodes.last { tv ? $0.kind == "tv" : $0.kind != "preview" && $0.kind != "special" }
+        UserDefaults.standard.set(last?.id ?? 0, forKey: "final-\(id)"); UserDefaults.standard.set(Date(), forKey: "final-ts-\(id)")
+    }
     func finished(_ item: AnimeItem) -> Bool { let f = UserDefaults.standard.integer(forKey: "final-\(item.id)"); return f != 0 && isDone(f) }
+    // Список серий старше 12 часов перечитывается: у онгоинга могла выйти новая серия, и аниме вернётся на полку.
+    func refreshFinished() async {
+        let stale = history.filter { lastEpisode($0) != 0 && Date().timeIntervalSince(UserDefaults.standard.object(forKey: "final-ts-\($0.id)") as? Date ?? .distantPast) > 12 * 3600 }.prefix(20)
+        var changed = false
+        for item in stale { let was = finished(item); if let list = try? await episodes(item) { changed = changed || was != finished(item); _ = list } }
+        if changed { objectWillChange.send() }
+    }
     // Сезоны франшизы, как в блоке связанных частей на странице аниме на сайте Anime 365.
     // В API этого блока нет: читаем открытую страницу каталога и берём ТВ-сериалы основной линии.
     func seasons(_ item: AnimeItem) async -> [Season] {
