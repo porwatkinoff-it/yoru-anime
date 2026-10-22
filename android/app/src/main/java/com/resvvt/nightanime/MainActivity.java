@@ -221,7 +221,10 @@ public class MainActivity extends Activity {
   return c;
  }
  // На ТВ держим полку с фокусом в верхней трети экрана — видно и её, и следующую.
- void scrollIntoView(View v){ScrollView s=scroll;if(s==null)return;View shelf=v;while(shelf.getParent() instanceof View&&shelf.getParent()!=s.getChildAt(0))shelf=(View)shelf.getParent();int top=shelf.getTop()-dp(10);s.post(()->s.smoothScrollTo(0,Math.max(0,top)));}
+ // Длинный блок (список серий) на экран не влезает — тогда держим в верхней трети сам элемент.
+ void scrollIntoView(View v){ScrollView s=scroll;if(s==null)return;ViewGroup body=(ViewGroup)s.getChildAt(0);View shelf=v;while(shelf.getParent() instanceof View&&shelf.getParent()!=body)shelf=(View)shelf.getParent();int top=shelf.getTop()-dp(10);
+  if(shelf.getHeight()>s.getHeight()*0.6f&&shelf!=v){android.graphics.Rect r=new android.graphics.Rect();v.getDrawingRect(r);body.offsetDescendantRectToMyCoords(v,r);top=r.top-s.getHeight()/3;}
+  int t=top;s.post(()->s.smoothScrollTo(0,Math.max(0,t)));}
  LinearLayout shelf(LinearLayout body,String title,Runnable more){
   LinearLayout box=column();box.setClipChildren(false);box.setClipToPadding(false);
   LinearLayout h=row();h.setPadding(side(),0,side(),dp(8));

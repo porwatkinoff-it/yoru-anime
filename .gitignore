@@ -21,3 +21,4 @@ qa/fixtures/*
 *.keystore
 *.jks
 !qa/fixtures/README.md
+build/
