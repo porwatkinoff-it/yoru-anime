@@ -49,7 +49,8 @@
           ]
         }
       ],
-      "identity": null
+      "identity": "-",
+      "hardenedRuntime": false
     },
     "dmg": {
       "artifactName": "Yoru-Anime-${version}-mac-${arch}.${ext}"
