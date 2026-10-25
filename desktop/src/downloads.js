@@ -87,7 +87,16 @@ module.exports = function downloads({ api, UA, send, wrap }) {
       if (d.height && d.height !== s.height) fs.rmSync(part, { force: true });
       d.height = s.height;
       let have = 0; try { have = fs.statSync(part).size; } catch {}
-      const res = await net.fetch(new URL(s.url, 'https://smotret-anime.app').href, { headers: { 'User-Agent': UA, ...(have ? { Range: `bytes=${have}-` } : {}) }, signal: ctrl.signal });
+      const site = new URL(s.url, 'https://smotret-anime.app');
+      const get = u => net.fetch(u.href, { headers: { 'User-Agent': UA, ...(have ? { Range: `bytes=${have}-` } : {}) }, signal: ctrl.signal });
+      // Через самый быстрый из проверенных серверов; не ответил — по ссылке сайта.
+      let res = null;
+      if (d.server && /^ru-/.test(site.host) && site.host !== d.server) {
+        const fast = new URL(site.href); fast.host = d.server;
+        try { res = await get(fast); if (!res.ok) res = null; } catch { if (ctrl.signal.aborted) throw new Error('aborted'); }
+        if (!res) { send('serverFailed', d.server); d.server = ''; }
+      }
+      res = res || await get(site);
       if (res.status === 416) { have = 0; fs.rmSync(part, { force: true }); throw httpError(410); }
       if (!res.ok) throw httpError(res.status);
       if (res.status !== 206) have = 0;
@@ -147,7 +156,7 @@ module.exports = function downloads({ api, UA, send, wrap }) {
     const d = {
       id: meta.id, seriesId: meta.seriesId, series: meta.series, episodeTitle: meta.episodeTitle, episodeNumber: meta.episodeNumber,
       translationId: meta.translationId, translationTitle: meta.translationTitle, translationKind: meta.translationKind, translationSignature: meta.translationSignature,
-      quality: meta.quality || 720, height: 0, video: `${meta.id}.mp4`, subtitles: '', bytes: 0, total: 0, state: 'queued', error: '', created: Date.now()
+      quality: meta.quality || 720, server: meta.server || '', height: 0, video: `${meta.id}.mp4`, subtitles: '', bytes: 0, total: 0, state: 'queued', error: '', created: Date.now()
     };
     items.push(d); changed(); next();
     return d;

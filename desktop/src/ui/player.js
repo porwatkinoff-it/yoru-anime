@@ -1,5 +1,6 @@
 // Плеер: видео с запасными ссылками, качество, скорость, субтитры ASS, пропуск заставки и следующая серия.
 import * as D from './data.js';
+import * as Sv from './servers.js';
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
 const SKIP = 88, NEXT_AT = 90, COUNTDOWN = 10;
@@ -86,6 +87,7 @@ class Player {
   // Ошибка источника: следующая ссылка того же качества, затем качество ниже.
   fallback() {
     const at = this.v.currentTime || this.resumeAt();
+    Sv.failed(this.urls[this.urlIndex]);
     if (this.urlIndex + 1 < this.urls.length) { this.urlIndex++; return this.load(at); }
     const i = this.options.indexOf(this.option);
     if (i + 1 < this.options.length) { this.option = this.options[i + 1]; this.urls = [this.option.url, ...this.option.alternatives]; this.urlIndex = 0; this.flash(`Переключаемся на ${this.option.height}p`); return this.load(at); }

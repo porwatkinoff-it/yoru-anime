@@ -276,3 +276,11 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .kv input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--progress); }
 svg.inline { width: 16px; height: 16px; vertical-align: -3px; }
 .dl-ico svg.fill { fill: currentColor; stroke: none; margin-left: 2px; }
+
+/* Сервер видео */
+#servers .seg { margin: 4px 0 8px; }
+#servers .hint { color: var(--muted); font-size: 13px; margin: 6px 0 10px; }
+#servers .kv b { font-variant-numeric: tabular-nums; font-weight: 600; }
+#servers .best { font-style: normal; font-size: 11px; font-weight: 800; padding: 1px 6px; margin-left: 6px; border-radius: 999px; background: var(--score-high); color: #0a101c; }
+#servers .actions { margin-top: 12px; }
+#servers .speed.high { color: var(--score-high); } #servers .speed.mid { color: var(--score-mid); } #servers .speed.low { color: var(--score-low); }

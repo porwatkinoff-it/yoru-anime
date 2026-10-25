@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('yoru', {
   onUpdateProgress: on('updateProgress'),
   onDownloadProgress: on('downloadProgress'),
   hasBattery: () => ipcRenderer.invoke('hasBattery'),
+  serverSpeed: url => ipcRenderer.invoke('serverSpeed', url),
   dl: {
     list: () => ipcRenderer.invoke('dlList'),
     enqueue: meta => ipcRenderer.invoke('dlEnqueue', meta),
@@ -26,7 +27,8 @@ contextBridge.exposeInMainWorld('yoru', {
     text: id => ipcRenderer.invoke('dlText', id),
     space: () => ipcRenderer.invoke('dlSpace'),
     onChanged: on('dlChanged'),
-    onDone: on('dlDone')
+    onDone: on('dlDone'),
+    onServerFailed: on('serverFailed')
   },
   onFullscreen: on('fullscreenChanged')
 });

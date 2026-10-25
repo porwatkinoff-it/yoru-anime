@@ -2,6 +2,7 @@
 import * as D from './data.js';
 import { openPlayer } from './player.js';
 import * as O from './offline.js';
+import * as Sv from './servers.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const main = $('#main');
@@ -238,7 +239,8 @@ function Account(_r, alive) {
     if (!alive()) return;
     page.innerHTML = `<div class="page-head"><h1>Аккаунт</h1></div>` + (signed ? `<div class="panel"><h2>${esc(account?.name || 'Аккаунт')}</h2>
       <div class="kv"><span>Подписка</span><b>${account?.premium ? 'Активна' + (account.until ? ' до ' + account.until.toLocaleDateString('ru') : '') : account?.premium === false ? 'Нет' : '…'}</b></div>
-      <div class="actions" style="margin-top:16px"><button class="btn" id="site">${icon.globe}Anime 365</button><button class="btn" id="logout">Выйти</button></div></div>`
+      <div class="actions" style="margin-top:16px"><button class="btn" id="site">${icon.globe}Anime 365</button><button class="btn" id="logout">Выйти</button></div></div>
+      <div class="panel" id="servers"></div>`
       : `<form class="panel" id="login"><h2>Вход в Anime 365</h2><p>Нужен аккаунт с подпиской — без неё сайт не даёт видео. Пароль уходит только на сайт, приложение хранит лишь ключ входа.</p>
       <label class="field"><span>Почта</span><input name="email" type="email" autocomplete="username" required></label>
       <label class="field"><span>Пароль</span><input name="password" type="password" autocomplete="current-password" required></label>
@@ -255,6 +257,41 @@ function Account(_r, alive) {
       await refreshAccount(); if (alive()) draw(); toast('Вы вошли в Anime 365');
     });
     $('#check', page).addEventListener('click', () => checkUpdate(true));
+    const sv = $('#servers', page);
+    if (sv) ServersPanel(sv, alive);
+  };
+  draw();
+}
+
+// Видеосерверы с проверкой скорости — как в Android- и iOS-версиях.
+// Серверы подписаны по порядку в списке: после проверки «Сервер 1» — самый быстрый.
+function ServersPanel(el, alive) {
+  let results = null, testing = false, message = '';
+  const ago = t => { const m = Math.round((t - Date.now()) / 60000), f = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' });
+    return Math.abs(m) < 60 ? f.format(m, 'minute') : Math.abs(m) < 1440 ? f.format(Math.round(m / 60), 'hour') : f.format(Math.round(m / 1440), 'day'); };
+  const speedClass = r => r.mbit == null ? 'low' : r.mbit >= 25 ? 'high' : r.mbit >= 8 ? 'mid' : 'low';
+  const draw = () => {
+    if (!alive()) return;
+    const saved = Sv.speeds();
+    const rows = results || Sv.seen().map(h => ({ host: h, mbit: saved[h] ?? null, error: saved[h] == null ? 'не проверен' : '' }));
+    const t = Sv.tested();
+    el.innerHTML = `<h2>Сервер видео</h2>
+      <div class="seg"><button data-auto="1" class="${Sv.auto() ? 'on' : ''}">Самый быстрый</button><button data-auto="0" class="${Sv.auto() ? '' : 'on'}">Как выдаёт сайт</button></div>
+      <p class="hint">${Sv.auto() ? 'Видео и загрузки идут через самый быстрый из проверенных серверов. Если он не ответит, плеер возьмёт ссылку сайта.' : 'Каждую серию сайт отдаёт со случайного сервера.'}</p>
+      ${rows.map((r, i) => `<div class="kv server"><span>Сервер ${i + 1}${r.host === Sv.best() ? ' <i class="best">лучший</i>' : ''}</span><b class="speed ${speedClass(r)}">${r.mbit != null ? Math.round(r.mbit) + ' Мбит/с' : esc(r.error || '—')}</b></div>`).join('')}
+      ${message ? `<p class="error">${esc(message)}</p>` : ''}
+      <div class="actions"><button class="btn primary" id="test" ${testing ? 'disabled' : ''}>${testing ? 'Проверяю…' : 'Проверить серверы'}</button></div>
+      <p class="hint">${testing ? '' : t ? 'Последняя проверка: ' + ago(t) : 'Серверы ещё не проверялись'}</p>`;
+    el.querySelectorAll('[data-auto]').forEach(b => b.addEventListener('click', () => { Sv.setAuto(b.dataset.auto === '1'); draw(); }));
+    $('#test', el).addEventListener('click', async () => {
+      testing = true; message = ''; results = []; draw();
+      try { await Sv.test(r => { results.push(r); draw(); }); }
+      catch (e) { message = e.message; }
+      // Проверка не началась — показываем сохранённые серверы.
+      if (!results.length) results = null;
+      else results.sort((a, b) => (b.mbit ?? -1) - (a.mbit ?? -1));
+      testing = false; draw();
+    });
   };
   draw();
 }

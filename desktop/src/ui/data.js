@@ -2,6 +2,8 @@
 export const BASE = 'https://smotret-anime.app';
 export const CARD_FIELDS = 'id,titles,posterUrl,posterUrlSmall,typeTitle,year,myAnimeListScore,season,genres,isHentai';
 
+import * as Sv from './servers.js';
+
 // ---------- Хранилище (localStorage окна приложения) ----------
 export const S = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -164,7 +166,10 @@ export async function playback(t, ep, it) {
   const options = [];
   for (const s of d.stream || []) {
     const h = +s.height || 0;
-    const urls = (s.urls || []).map(makeURL).filter(Boolean);
+    const site = (s.urls || []).map(makeURL).filter(Boolean);
+    Sv.remember(site);
+    // Самый быстрый сервер первым, ссылки сайта — запасные.
+    const urls = [...new Set(site.flatMap(Sv.preferred))];
     if (urls.length) options.push({ id: 'stream-' + h, url: urls[0], height: h, alternatives: urls.slice(1) });
   }
   const downloads = [];

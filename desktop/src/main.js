@@ -62,6 +62,21 @@ ipcMain.handle('text', wrap(async url => {
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return await res.text();
 }));
+// Скорость видеосервера: первые 4 МБ одного и того же файла (как в Android- и iOS-версиях).
+ipcMain.handle('serverSpeed', async (_e, url) => {
+  const u = new URL(url);
+  if (u.protocol !== 'https:' || !/^ru-[^.]+\./.test(u.host)) return { error: 'недоступен' };
+  const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 15000);
+  const start = Date.now();
+  try {
+    const res = await net.fetch(u.href, { headers: { 'User-Agent': UA, Range: 'bytes=0-4194303' }, cache: 'no-store', signal: ctrl.signal });
+    if (!res.ok) return { error: `не отдал файл (${res.status})` };
+    const size = (await res.arrayBuffer()).byteLength;
+    if (size <= 100000) return { error: `не отдал файл (${res.status})` };
+    return { mbit: size * 8 / 1e6 / Math.max((Date.now() - start) / 1000, 0.001) };
+  } catch { return { error: ctrl.signal.aborted ? 'слишком медленно' : 'недоступен' }; }
+  finally { clearTimeout(timer); }
+});
 ipcMain.handle('openExternal', (_e, url) => { if (/^https:\/\//.test(url)) shell.openExternal(url); });
 ipcMain.handle('version', () => app.getVersion());
 ipcMain.handle('fullscreen', (_e, on) => { if (win) win.setFullScreen(on ?? !win.isFullScreen()); return win?.isFullScreen(); });

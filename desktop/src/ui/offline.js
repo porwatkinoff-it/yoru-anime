@@ -3,6 +3,7 @@
 import * as D from './data.js';
 import { openPlayer } from './player.js';
 import { esc, toast, plural, chooseTranslation } from './app.js';
+import * as Sv from './servers.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 let enabled = false, items = [];
@@ -32,6 +33,7 @@ export async function init() {
   items = await window.yoru.dl.list();
   window.yoru.dl.onChanged(list => { items = list; paint(); });
   window.yoru.dl.onDone(d => toast(`Скачано: ${D.item(d.series).title} — ${d.episodeTitle}`));
+  window.yoru.dl.onServerFailed(h => Sv.failed('https://' + h + '/'));
   cleanWatched();
   paint();
 }
@@ -70,7 +72,8 @@ export async function episodeClick(it, ep) {
 export async function download(it, ep, t) {
   const r = await window.yoru.dl.enqueue({
     id: ep.id, seriesId: it.id, series: it.raw, episodeTitle: ep.title, episodeNumber: ep.number,
-    translationId: t.id, translationTitle: t.name || t.group, translationKind: t.kind, translationSignature: t.signature, quality: quality()
+    translationId: t.id, translationTitle: t.name || t.group, translationKind: t.kind, translationSignature: t.signature, quality: quality(),
+    server: Sv.auto() ? Sv.best() || '' : ''
   });
   if (r.error) return toast(r.error);
   // Перевод запоминаем, но аниме не считаем начатым — как на телефоне.
