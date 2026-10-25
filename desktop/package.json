@@ -33,6 +33,10 @@
     "artifactName": "Yoru-Anime-${version}-${os}-${arch}.${ext}",
     "mac": {
       "category": "public.app-category.entertainment",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Yoru Anime ничего не записывает. macOS задаёт этот вопрос, когда звук идёт через устройство со встроенным микрофоном (аудиоинтерфейс, гарнитура). Можно нажать «Не разрешать» — звук и видео будут работать.",
+        "NSAudioCaptureUsageDescription": "Yoru Anime ничего не записывает. Можно нажать «Не разрешать» — звук и видео будут работать."
+      },
       "target": [
         {
           "target": "zip",
