@@ -34,6 +34,8 @@ def svg(w, h, body):
 files = {
     # iOS: квадрат во весь холст, углы скругляет система.
     "icon-ios.svg": svg(1024, 1024, background + '<rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#glow)"/>' + eye(0.95, 512, 540) + sparkle(800, 210, 78) + sparkle(905, 300, 34, "#FFCC80")),
+    # Компьютер: скруглённый квадрат с полями по сетке macOS (824 из 1024), вокруг прозрачно.
+    "icon-desktop.svg": svg(1024, 1024, background + '<clipPath id="squircle"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath><g clip-path="url(#squircle)"><g transform="translate(100 100) scale(0.8047)"><rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#glow)"/>' + eye(0.95, 512, 540) + sparkle(800, 210, 78) + sparkle(905, 300, 34, "#FFCC80") + '</g></g>'),
     # Android adaptive icon: фон и передний план отдельно, рисунок внутри безопасной зоны 66/108.
     "icon-bg.svg": svg(1024, 1024, background + '<rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#glow)"/>'),
     "icon-fg.svg": svg(1024, 1024, eye(0.66, 512, 530) + sparkle(700, 330, 52) + sparkle(770, 390, 22, "#FFCC80")),

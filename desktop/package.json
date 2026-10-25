@@ -1,0 +1,100 @@
+{
+  "name": "yoru-anime",
+  "productName": "Yoru Anime",
+  "version": "2.0.10",
+  "description": "Аниме с Anime 365 на компьютере",
+  "main": "src/main.js",
+  "author": "porwatkinoff-it",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "44.9.2",
+    "electron-builder": "26.18.0",
+    "esbuild": "^0.25.10",
+    "jassub": "2.5.23"
+  },
+  "build": {
+    "appId": "com.resvvt.yoruanime",
+    "productName": "Yoru Anime",
+    "copyright": "porwatkinoff-it",
+    "files": [
+      "src/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "artifactName": "Yoru-Anime-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.entertainment",
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "identity": null
+    },
+    "dmg": {
+      "artifactName": "Yoru-Anime-${version}-mac-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "Yoru-Anime-${version}-win-${arch}-setup.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "category": "AudioVideo",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "maintainer": "porwatkinoff-it <noreply@github.com>"
+    },
+    "appImage": {
+      "artifactName": "Yoru-Anime-${version}-linux-${arch}.${ext}"
+    },
+    "deb": {
+      "artifactName": "Yoru-Anime-${version}-linux-${arch}.${ext}"
+    },
+    "publish": null
+  },
+  "homepage": "https://github.com/porwatkinoff-it/yoru-anime"
+}

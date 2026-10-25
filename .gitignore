@@ -22,3 +22,7 @@ qa/fixtures/*
 *.jks
 !qa/fixtures/README.md
 build/
+# Компьютерная версия
+desktop/node_modules/
+desktop/dist/
+!desktop/build/
