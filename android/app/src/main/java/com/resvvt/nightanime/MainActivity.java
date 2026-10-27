@@ -44,7 +44,7 @@ public class MainActivity extends Activity {
  JSONObject current;
  ArrayList<JSONObject> episodes;
  int autoPlay=0,autoNextAfter=0;
- Runnable ticker;
+ Runnable ticker;boolean active;
 
  @Override public void onCreate(Bundle b){
   super.onCreate(b);
@@ -113,11 +113,33 @@ public class MainActivity extends Activity {
   Bitmap cached=posters.get(url);
   if(cached!=null){view.setImageBitmap(cached);return;}
   view.setTag(url);
-  io.execute(()->{Bitmap bitmap=null;try{bitmap=decodePoster(Api.download(url,4*1024*1024),height);}catch(Exception ignored){}
+  io.execute(()->{Bitmap bitmap=null;try{bitmap=loadPoster(url,height);}catch(Exception ignored){}
    if(bitmap==null){if(fallback!=null&&!fallback.isEmpty()&&!fallback.equals(url))runOnUiThread(()->{if(url.equals(view.getTag()))poster(view,fallback,null,height);});return;}
    Bitmap b=bitmap;posters.put(url,b);runOnUiThread(()->{if(url.equals(view.getTag()))view.setImageBitmap(b);});});
  }
  static Bitmap decodePoster(byte[] data,int height){BitmapFactory.Options o=new BitmapFactory.Options();o.inJustDecodeBounds=true;BitmapFactory.decodeByteArray(data,0,data.length,o);int sample=1;while(o.outHeight/(sample*2)>=height)sample*=2;o=new BitmapFactory.Options();o.inSampleSize=sample;o.inPreferredConfig=Bitmap.Config.RGB_565;return BitmapFactory.decodeByteArray(data,0,data.length,o);}
+ // Постеры хранятся и на диске: при следующем запуске их не нужно качать заново. Свежим файл считается 30 дней,
+ // без сети годится и старый. Папка — не больше 40 МБ: раз за запуск удаляем самые старые файлы.
+ static final java.util.concurrent.atomic.AtomicBoolean postersTrimmed=new java.util.concurrent.atomic.AtomicBoolean();
+ Bitmap loadPoster(String url,int height)throws Exception{
+  java.io.File dir=new java.io.File(getCacheDir(),"posters"),file=new java.io.File(dir,sha1(url));
+  if(postersTrimmed.compareAndSet(false,true))trimPosters(dir);
+  if(System.currentTimeMillis()-file.lastModified()<30L*24*3600*1000){Bitmap b=decodeFile(file,height);if(b!=null)return b;}
+  byte[] data;try{data=Api.download(url,4*1024*1024);}catch(Exception e){Bitmap old=decodeFile(file,height);if(old!=null)return old;throw e;}
+  Bitmap b=decodePoster(data,height);
+  // Пишем во временный файл и переименовываем: другой поток никогда не прочитает недописанный постер.
+  if(b!=null)try{dir.mkdirs();java.io.File tmp=java.io.File.createTempFile("poster",".tmp",dir);try(java.io.FileOutputStream out=new java.io.FileOutputStream(tmp)){out.write(data);}if(!tmp.renameTo(file))tmp.delete();}catch(Exception ignored){}
+  return b;
+ }
+ // Битый файл удаляется, чтобы постер скачался заново.
+ static Bitmap decodeFile(java.io.File file,int height){if(!file.isFile())return null;try{Bitmap b=decodePoster(java.nio.file.Files.readAllBytes(file.toPath()),height);if(b!=null)return b;}catch(Exception ignored){}file.delete();return null;}
+ static void trimPosters(java.io.File dir){java.io.File[] files=dir.listFiles();if(files==null)return;
+  long now=System.currentTimeMillis(),total=0;long[] modified=new long[files.length];Integer[] order=new Integer[files.length];
+  for(int i=0;i<files.length;i++){modified[i]=files[i].lastModified();order[i]=i;}
+  Arrays.sort(order,(x,y)->Long.compare(modified[y],modified[x]));
+  for(int i:order){java.io.File f=files[i];long age=now-modified[i];if(f.getName().endsWith(".tmp")?age>600000:age>90L*24*3600*1000||(total+=f.length())>40L*1024*1024)f.delete();}
+ }
+ static String sha1(String s){try{StringBuilder b=new StringBuilder();for(byte x:java.security.MessageDigest.getInstance("SHA-1").digest(s.getBytes("UTF-8")))b.append(Character.forDigit(x>>4&15,16)).append(Character.forDigit(x&15,16));return b.toString();}catch(Exception e){return Integer.toHexString(s.hashCode());}}
  // Размытый постер на фоне баннера и страницы аниме.
  View backdrop(JSONObject item,int height){
   ImageView v=new ImageView(this);v.setScaleType(ImageView.ScaleType.CENTER_CROP);v.setAlpha(.5f);
@@ -197,8 +219,12 @@ public class MainActivity extends Activity {
   h.addView(bold(title,tv?24:22,TEXT),new LinearLayout.LayoutParams(0,-2,1));
   return h;
  }
+ // Опрос загрузок раз в секунду — только пока экран на виду и что-то качается или ждёт в очереди. Когда качать нечего,
+ // опрос замирает: новая загрузка перерисовывает экран и запускает его заново, а при возвращении в приложение он проверяет всё ещё раз.
  void stopTicker(){if(ticker!=null)handler.removeCallbacks(ticker);ticker=null;}
- void startTicker(Runnable r){stopTicker();ticker=new Runnable(){public void run(){if(ticker!=this)return;r.run();handler.postDelayed(this,1000);}};handler.postDelayed(ticker,1000);}
+ void startTicker(java.util.function.BooleanSupplier busy){stopTicker();ticker=new Runnable(){public void run(){if(ticker==this&&active&&busy.getAsBoolean())handler.postDelayed(this,1000);}};if(active)handler.postDelayed(ticker,1000);}
+ // setText перерисовывает надпись даже без изменений, поэтому меняем текст, только если он другой.
+ static void changeText(TextView view,CharSequence value){if(!android.text.TextUtils.equals(view.getText(),value))view.setText(value);}
 
  // ───────────── Карточки и полки ─────────────
  int posterWidth(){return dp(tv?132:112);}
@@ -538,7 +564,7 @@ public class MainActivity extends Activity {
     if(autoPlay!=0){int target=autoPlay;autoPlay=0;for(JSONObject e:es)if(e.optInt("id")==target){startEpisode(item,e,true,status);break;}}
     else if(autoNextAfter!=0){JSONObject n=nextEpisode(autoNextAfter);autoNextAfter=0;if(n!=null)startEpisode(item,n,true,status);}
     else if(resume){JSONObject e=resumeEpisode(item);if(e!=null)startEpisode(item,e,true,status);}
-    if(!tv)startTicker(()->{if(current==item)updateDownloadButtons(list);});
+    if(!tv)startTicker(()->current==item&&updateDownloadButtons(list));
    });
   }catch(Exception e){runOnUiThread(()->{if(gen!=generation)return;status.setText(e.getMessage());play.setText("Повторить");play.setOnClickListener(v->refresh());});}});
  }
@@ -600,19 +626,21 @@ public class MainActivity extends Activity {
   }
   updateDownloadButtons(list);
  }
- void updateDownloadButtons(LinearLayout list){
-  if(downloadButtons.isEmpty())return;JSONArray all=Downloads.items(this);long[] ids=new long[all.length()];Map<Integer,Long> dm=new HashMap<>();
+ // true — какая-то из показанных серий ещё качается или ждёт в очереди.
+ boolean updateDownloadButtons(LinearLayout list){
+  if(downloadButtons.isEmpty())return false;JSONArray all=Downloads.items(this);long[] ids=new long[all.length()];Map<Integer,Long> dm=new HashMap<>();
   for(int i=0;i<all.length();i++){ids[i]=all.optJSONObject(i).optLong("dm");dm.put(all.optJSONObject(i).optInt("id"),ids[i]);}
-  Map<Long,Downloads.Status> st=ids.length==0?new HashMap<>():Downloads.statuses(this,ids);
+  Map<Long,Downloads.Status> st=ids.length==0?new HashMap<>():Downloads.statuses(this,ids);boolean busy=false;
   for(Map.Entry<Integer,TextView> e:downloadButtons.entrySet()){
    Long id=dm.get(e.getKey());TextView b=e.getValue();
-   if(id==null){b.setText("↓");b.setTextColor(TEXT);b.setContentDescription("Скачать");continue;}
+   if(id==null){changeText(b,"↓");b.setTextColor(TEXT);b.setContentDescription("Скачать");continue;}
    Downloads.Status s=st.get(id);if(s==null){s=Downloads.status(this,Downloads.item(this,e.getKey()));}
-   if(s.state==Downloads.DONE){b.setText("✓");b.setTextColor(PROGRESS);b.setContentDescription("Скачано, нажмите чтобы удалить");}
-   else if(s.state==Downloads.FAILED){b.setText("↻");b.setTextColor(DANGER);b.setContentDescription("Ошибка загрузки, повторить");}
-   else{b.setTextSize(12);b.setText(s.total>0?(int)(s.progress()*100)+"%":"…");b.setTextColor(PROGRESS);b.setContentDescription("Загрузка");continue;}
+   if(s.state==Downloads.DONE){changeText(b,"✓");b.setTextColor(PROGRESS);b.setContentDescription("Скачано, нажмите чтобы удалить");}
+   else if(s.state==Downloads.FAILED){changeText(b,"↻");b.setTextColor(DANGER);b.setContentDescription("Ошибка загрузки, повторить");}
+   else{busy=true;b.setTextSize(12);changeText(b,s.total>0?(int)(s.progress()*100)+"%":"…");b.setTextColor(PROGRESS);b.setContentDescription("Загрузка");continue;}
    b.setTextSize(20);
   }
+  return busy;
  }
  void confirmRemove(int episode,Runnable after){new AlertDialog.Builder(this).setTitle("Удалить загрузку?").setMessage("Серия пропадёт с устройства, смотреть её можно будет онлайн.").setPositiveButton("Удалить",(d,w)->{Downloads.remove(this,episode);after.run();}).setNegativeButton("Отмена",null).show();}
  void retryDownload(int episode){io.execute(()->{try{Downloads.retry(this,episode);}catch(Exception e){runOnUiThread(()->alert(e.getMessage()));}runOnUiThread(this::refresh);});}
@@ -769,17 +797,18 @@ public class MainActivity extends Activity {
   body.addView(toggleRow("Удалять просмотренные",Downloads.autoDelete(this),v->p.edit().putBoolean("autodelete",v).apply()));
   TextView foot=text("Занято "+Downloads.size(Downloads.used(this))+" · свободно "+Downloads.size(Downloads.free(this))+". Серии хранятся в папке приложения и удаляются вместе с ним. Долгое нажатие на серию — удалить.",12,MUTED);
   foot.setPadding(side(),dp(8),side(),0);body.addView(foot);
-  Runnable update=()->{
+  java.util.function.BooleanSupplier update=()->{boolean busy=false;
    JSONArray items=Downloads.items(this);long[] ids=new long[items.length()];for(int i=0;i<ids.length;i++)ids[i]=items.optJSONObject(i).optLong("dm");
    Map<Long,Downloads.Status> st=ids.length==0?new HashMap<>():Downloads.statuses(this,ids);
    for(int i=0;i<items.length();i++){JSONObject o=items.optJSONObject(i);TextView cap=captions.get(o.optInt("id"));if(cap==null)continue;
     Downloads.Status s=st.get(o.optLong("dm"));if(s==null)s=Downloads.status(this,o);TextView icon=(TextView)cap.getTag();
     String tr=trLabel(o.optJSONObject("translation"));
-    if(s.state==Downloads.DONE){cap.setText(Downloads.label(o.optInt("height"))+" · "+Downloads.size(s.total)+" · "+tr);cap.setTextColor(MUTED);icon.setText("▶");icon.setTextColor(TEXT);}
-    else if(s.state==Downloads.FAILED){cap.setText((s.error==null?"Ошибка":s.error)+" · нажмите, чтобы повторить");cap.setTextColor(DANGER);icon.setText("↻");icon.setTextColor(DANGER);}
-    else{cap.setText(s.error!=null?s.error:s.total>0?(int)(s.progress()*100)+"% · "+Downloads.size(s.bytes)+" из "+Downloads.size(s.total):"Подготовка…");cap.setTextColor(PROGRESS);icon.setText(s.total>0?(int)(s.progress()*100)+"":"…");icon.setTextSize(12);icon.setTextColor(PROGRESS);}
-   }};
-  update.run();startTicker(update);
+    if(s.state==Downloads.DONE){changeText(cap,Downloads.label(o.optInt("height"))+" · "+Downloads.size(s.total)+" · "+tr);cap.setTextColor(MUTED);changeText(icon,"▶");icon.setTextSize(15);icon.setTextColor(TEXT);}
+    else if(s.state==Downloads.FAILED){changeText(cap,(s.error==null?"Ошибка":s.error)+" · нажмите, чтобы повторить");cap.setTextColor(DANGER);changeText(icon,"↻");icon.setTextSize(15);icon.setTextColor(DANGER);}
+    else{busy=true;changeText(cap,s.error!=null?s.error:s.total>0?(int)(s.progress()*100)+"% · "+Downloads.size(s.bytes)+" из "+Downloads.size(s.total):"Подготовка…");cap.setTextColor(PROGRESS);changeText(icon,s.total>0?(int)(s.progress()*100)+"":"…");icon.setTextSize(12);icon.setTextColor(PROGRESS);}
+   }
+   return busy;};
+  update.getAsBoolean();startTicker(update);
  }
  static String plural(int n){return n%10==1&&n%100!=11?"серия":n%10>=2&&n%10<=4&&(n%100<12||n%100>14)?"серии":"серий";}
  View settingRow(String title,String value,Runnable click){
@@ -885,7 +914,7 @@ public class MainActivity extends Activity {
  void alert(String s){if(!isFinishing())new AlertDialog.Builder(this).setTitle("Yoru Anime").setMessage(s).setPositiveButton("ОК",null).show();}
 
  // Постер для плитки «Продолжить» на главном экране Night TV.
- void saveContinuePoster(JSONObject item){String url=item.optString("posterUrlSmall",item.optString("posterUrl"));io.execute(()->{try{Bitmap b=posters.get(url);if(b==null)b=decodePoster(Api.download(url,4*1024*1024),dp(220));if(b==null)return;java.io.File tmp=new java.io.File(getFilesDir(),"continue.tmp");try(java.io.FileOutputStream out=new java.io.FileOutputStream(tmp)){b.compress(Bitmap.CompressFormat.JPEG,88,out);}tmp.renameTo(new java.io.File(getFilesDir(),"continue.jpg"));}catch(Exception ignored){}});}
+ void saveContinuePoster(JSONObject item){String url=item.optString("posterUrlSmall",item.optString("posterUrl"));io.execute(()->{try{Bitmap b=posters.get(url);if(b==null)b=loadPoster(url,dp(220));if(b==null)return;java.io.File tmp=new java.io.File(getFilesDir(),"continue.tmp");try(java.io.FileOutputStream out=new java.io.FileOutputStream(tmp)){b.compress(Bitmap.CompressFormat.JPEG,88,out);}tmp.renameTo(new java.io.File(getFilesDir(),"continue.jpg"));}catch(Exception ignored){}});}
  // Отладка подписчика: запускает первую серию последнего аниме с лучшим доступным качеством.
  void replaySubscriber(){SharedPreferences last=State.lastPlay(this);TextView status=new TextView(this);
   if(last.contains("translation")){try{play(new JSONObject(last.getString("item","{}")),new JSONObject(last.getString("episode","{}")),new JSONObject(last.getString("translation","{}")),status);return;}catch(Exception ignored){}}
@@ -894,8 +923,8 @@ public class MainActivity extends Activity {
  void continueWatching(){try{SharedPreferences lp=State.lastPlay(this);if(!lp.contains("item"))return;JSONObject item=new JSONObject(lp.getString("item","{}")),ep=new JSONObject(lp.getString("episode","{}"));autoPlay=ep.optInt("id");if(tab!=0)showTab(0);openDetail(item,false);}catch(Exception ignored){}}
 
  @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(intent.hasExtra("development_test_video")||intent.getBooleanExtra("development_test_subscriber",false))recreate();else if(intent.getBooleanExtra("continue",false))continueWatching();}
- @Override protected void onResume(){super.onResume();if(Updater.due(this))checkUpdates(false);if(pendingUpdate!=null&&Updater.canInstall(this)){Updater.Release r=pendingUpdate;pendingUpdate=null;startUpdate(r);}if(!tv)Sync.run(this,()->{if(current==null)refresh();});}
- @Override protected void onPause(){super.onPause();if(!stack.isEmpty()&&scroll!=null)stack.get(stack.size()-1).scrollY=scroll.getScrollY();}
+ @Override protected void onResume(){super.onResume();active=true;if(ticker!=null){handler.removeCallbacks(ticker);handler.post(ticker);}if(Updater.due(this))checkUpdates(false);if(pendingUpdate!=null&&Updater.canInstall(this)){Updater.Release r=pendingUpdate;pendingUpdate=null;startUpdate(r);}if(!tv)Sync.run(this,()->{if(current==null)refresh();});}
+ @Override protected void onPause(){super.onPause();active=false;if(ticker!=null)handler.removeCallbacks(ticker);if(!stack.isEmpty()&&scroll!=null)stack.get(stack.size()-1).scrollY=scroll.getScrollY();}
  @Override protected void onActivityResult(int req,int res,Intent data){
   super.onActivityResult(req,res,data);if(req!=7||data==null)return;
   try{
