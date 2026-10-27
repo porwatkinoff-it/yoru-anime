@@ -1,5 +1,8 @@
 import SwiftUI
 import UIKit
+import CryptoKit
+import ImageIO
+import CoreImage.CIFilterBuiltins
 
 @main struct NightAnimeApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -75,22 +78,131 @@ struct NightButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.97 : 1).animation(.easeOut(duration: 0.13), value: configuration.isPressed)
     }
 }
-// Постеры уменьшаются до размера карточки и держатся в памяти, чтобы каталог открывался мгновенно.
-enum PosterCache { static let images: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.totalCostLimit = 24 * 1024 * 1024; return c }() }
+// Постеры уменьшаются до размера карточки и держатся в памяти, чтобы каталог открывался мгновенно. Скачанные файлы
+// лежат и на диске: при следующем запуске их не нужно качать заново. Свежим файл считается 30 дней, без сети
+// годится и старый. Папка — не больше 40 МБ: раз за запуск удаляем самые старые файлы.
+enum PosterCache {
+    static let images: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.totalCostLimit = 24 * 1024 * 1024; return c }()
+    static let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("posters", isDirectory: true)
+    // Своя сессия без URLCache: файл и так сохраняется в папку постеров, вторая копия в кэше системы не нужна.
+    static let session: URLSession = { let c = URLSessionConfiguration.default; c.urlCache = nil; c.requestCachePolicy = .reloadIgnoringLocalCacheData; return URLSession(configuration: c) }()
+    static func cost(_ image: UIImage) -> Int { Int(image.size.width * image.size.height * image.scale * image.scale * 4) }
+    static func image(_ url: String) async -> UIImage? {
+        if let image = images.object(forKey: url as NSString) { return image }
+        return await PosterLoads.shared.image(url)
+    }
+    static func load(_ url: String) async -> UIImage? {
+        guard let u = URL(string: url) else { return nil }
+        if u.isFileURL { return (try? Data(contentsOf: u)).flatMap(thumbnail) }
+        let file = folder.appendingPathComponent(Insecure.SHA1.hash(data: Data(url.utf8)).map { String(format: "%02x", $0) }.joined())
+        let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        if let modified, -modified.timeIntervalSinceNow < 30 * 86400, let image = decode(file) { return image }
+        guard let (data, _) = try? await session.data(from: u), let image = thumbnail(data) else { return modified == nil ? nil : decode(file) }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? data.write(to: file, options: .atomic)
+        return image
+    }
+    // Битый файл удаляется, чтобы постер скачался заново.
+    static func decode(_ file: URL) -> UIImage? {
+        if let image = (try? Data(contentsOf: file)).flatMap(thumbnail) { return image }
+        try? FileManager.default.removeItem(at: file); return nil
+    }
+    // ImageIO сразу декодирует картинку высотой не больше 430 пикселей, не разворачивая в памяти весь постер.
+    static func thumbnail(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let p = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              var w = p[kCGImagePropertyPixelWidth] as? Double, var h = p[kCGImagePropertyPixelHeight] as? Double, w > 0, h > 0 else { return nil }
+        if (p[kCGImagePropertyOrientation] as? UInt32 ?? 1) >= 5 { swap(&w, &h) }
+        let options = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true,
+                       kCGImageSourceThumbnailMaxPixelSize: (max(w, h) * min(1, 430 / h)).rounded(.up)] as CFDictionary
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
+        let image = UIImage(cgImage: cg)
+        return image.preparingForDisplay() ?? image
+    }
+    static func trim() {
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys)) else { return }
+        var total = 0
+        for (file, date, size) in files.map({ f in let v = try? f.resourceValues(forKeys: keys); return (f, v?.contentModificationDate ?? .distantPast, v?.fileSize ?? 0) }).sorted(by: { $0.1 > $1.1 }) {
+            total += size
+            if -date.timeIntervalSinceNow > 90 * 86400 || total > 40 << 20 { try? FileManager.default.removeItem(at: file) }
+        }
+    }
+
+    // Размытый фон баннера и шапки аниме: постер заполняет рамку и размывается один раз в четверть размера точек —
+    // после размытия мелких деталей всё равно нет. Края прозрачные, как у .blur; fade — маска баннера, прозрачная
+    // сверху и снизу, всё лишнее обрезано рамкой. Без fade сияние выходит за рамку на 3σ, как у .blur без обрезки.
+    static let blurContext = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull(), .cacheIntermediates: false])
+    static func backdrop(_ url: String, key: String, size: CGSize, radius: CGFloat, fade: Bool) async -> UIImage? {
+        if let image = images.object(forKey: key as NSString) { return image }
+        guard let poster = await image(url), let cg = poster.cgImage else { return nil }
+        let image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            let bleed = fade ? 0 : 3 * radius, k = 0.25
+            let canvas = CGRect(x: 0, y: 0, width: ((size.width + 2 * bleed) * k).rounded(.up), height: ((size.height + 2 * bleed) * k).rounded(.up))
+            let sx = canvas.width / (size.width + 2 * bleed), sy = canvas.height / (size.height + 2 * bleed)
+            let frame = CGRect(x: bleed * sx, y: bleed * sy, width: size.width * sx, height: size.height * sy)
+            var img = CIImage(cgImage: cg)
+            let scale = max(frame.width / img.extent.width, frame.height / img.extent.height)
+            img = img.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale, kCIInputAspectRatioKey: 1])
+            img = img.transformed(by: CGAffineTransform(translationX: frame.midX - img.extent.midX, y: frame.midY - img.extent.midY)).cropped(to: frame)
+            img = img.applyingGaussianBlur(sigma: radius * (sx + sy) / 2).cropped(to: canvas)
+            if fade {
+                let top = CIFilter.linearGradient(), bottom = CIFilter.linearGradient()
+                top.point0 = CGPoint(x: 0, y: frame.maxY); top.point1 = CGPoint(x: 0, y: frame.maxY - frame.height / 3); top.color0 = .clear; top.color1 = .white
+                bottom.point0 = CGPoint(x: 0, y: frame.minY); bottom.point1 = CGPoint(x: 0, y: frame.minY + frame.height / 3); bottom.color0 = .clear; bottom.color1 = .white
+                if let a = top.outputImage, let b = bottom.outputImage {
+                    img = img.applyingFilter("CISourceInCompositing", parameters: [kCIInputBackgroundImageKey: a.applyingFilter("CIMinimumCompositing", parameters: [kCIInputBackgroundImageKey: b])])
+                }
+            }
+            return blurContext.createCGImage(img, from: canvas, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)).map { UIImage(cgImage: $0) }
+        }.value
+        if let image { images.setObject(image, forKey: key as NSString, cost: cost(image)) }
+        return image
+    }
+}
+// Одновременные запросы одного постера — карточка и фон баннера — ждут одну загрузку.
+actor PosterLoads {
+    static let shared = PosterLoads()
+    private var running: [String: Task<UIImage?, Never>] = [:]
+    private var trimmed = false
+    func image(_ url: String) async -> UIImage? {
+        if let task = running[url] { return await task.value }
+        if !trimmed { trimmed = true; Task.detached(priority: .background) { PosterCache.trim() } }
+        let task = Task.detached(priority: .userInitiated) { await PosterCache.load(url) }
+        running[url] = task
+        let image = await task.value
+        running[url] = nil
+        if let image { PosterCache.images.setObject(image, forKey: url as NSString, cost: PosterCache.cost(image)) }
+        return image
+    }
+}
 struct CachedPoster: View {
     let url: String
     var fill = false
-    @State private var image: UIImage?
-    init(url: String, fill: Bool = false) { self.url = url; self.fill = fill; _image = State(initialValue: PosterCache.images.object(forKey: url as NSString)) }
+    // Картинка хранится вместе со своим адресом: если вид останется тем же, а аниме сменится, старый постер не задержится.
+    @State private var loaded: (url: String, image: UIImage)?
+    init(url: String, fill: Bool = false) { self.url = url; self.fill = fill; _loaded = State(initialValue: PosterCache.images.object(forKey: url as NSString).map { (url, $0) }) }
     var body: some View {
+        let image = loaded?.url == url ? loaded?.image : PosterCache.images.object(forKey: url as NSString)
         Group { if let image { if fill { Color.clear.overlay(Image(uiImage: image).resizable().scaledToFill()).clipped() } else { Image(uiImage: image).resizable().scaledToFit() } } else { Color.clear } }
-        .task(id: url) {
-            guard image == nil, let u = URL(string: url), let (data, _) = try? await URLSession.shared.data(from: u), let full = UIImage(data: data) else { return }
-            let scale = min(1, 430 / max(full.size.height, 1))
-            let thumb = await full.byPreparingThumbnail(ofSize: CGSize(width: full.size.width * scale, height: full.size.height * scale)) ?? full
-            PosterCache.images.setObject(thumb, forKey: url as NSString, cost: Int(thumb.size.width * thumb.size.height * thumb.scale * thumb.scale * 4))
-            image = thumb
-        }
+        .task(id: url) { if loaded?.url != url, let image = await PosterCache.image(url) { loaded = (url, image) } }
+    }
+}
+// Живой .blur видеокарта пересчитывала бы в каждом кадре прокрутки, а готовая маленькая картинка просто растягивается.
+struct BlurredBackdrop: View {
+    let url: String
+    let radius: CGFloat
+    var fade = false
+    // Пока фон пересчитывается под новый размер (поворот iPad), растягивается прежний фон того же аниме.
+    @State private var loaded: (url: String, key: String, image: UIImage)?
+    var body: some View {
+        GeometryReader { geo in
+            let size = geo.size, key = "blur|\(url)|\(Int(size.width))x\(Int(size.height))|\(radius)|\(fade)"
+            let image = loaded?.key == key ? loaded?.image : PosterCache.images.object(forKey: key as NSString) ?? (loaded?.url == url ? loaded?.image : nil)
+            Group { if let image { Image(uiImage: image).resizable() } else { Color.clear } }
+                .padding(fade ? 0 : -3 * radius)
+                .task(id: key) { if loaded?.key != key, size.width >= 1, size.height >= 1, let image = await PosterCache.backdrop(url, key: key, size: size, radius: radius, fade: fade) { loaded = (url, key, image) } }
+        }.allowsHitTesting(false)
     }
 }
 

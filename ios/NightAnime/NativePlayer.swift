@@ -31,7 +31,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     var subAttached = false, resumed = false, dragging = false
     var selected = 0, sourceIndex = 0, pendingTime: Int32 = 0, onClose: ((Bool, Bool) -> Void)?, isClosing = false
     var waitingForFrame = true, frameBaseline: Int32 = -1, waitStarted = Date(), ticks = 0
-    var ended = false, countdown = 0, countdownTimer: Timer?
+    var ended = false, countdown = 0, countdownTimer: Timer?, errorShown = false, shownPlaying: Bool?
     var compact: Bool { traitCollection.horizontalSizeClass == .compact || traitCollection.verticalSizeClass == .compact }
 
     init(_ p: Playback) { playback = p; super.init(nibName: nil, bundle: nil) }
@@ -124,9 +124,11 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
 
         speedButton = actionButton("gauge.with.needle", "Скорость 1×"); speedButton.showsMenuAsPrimaryAction = true
         subButton = actionButton("captions.bubble", "Субтитры"); subButton.showsMenuAsPrimaryAction = true
-        qualityButton = actionButton("sparkles.tv", "Качество"); qualityButton.showsMenuAsPrimaryAction = true
+        qualityButton = actionButton("sparkles.tv", label(playback.options[selected].height)); qualityButton.showsMenuAsPrimaryAction = true
         qualityButton.menu = UIMenu(title: "Качество", children: playback.options.enumerated().map { i, v in UIAction(title: label(v.height)) { [weak self] _ in self?.switchQuality(i) } })
         speedButton.menu = speedMenu()
+        // Меню субтитров собирается в момент открытия, а не перестраивается дважды в секунду.
+        subButton.menu = UIMenu(title: "Субтитры", children: [UIDeferredMenuElement.uncached { [weak self] done in done(self?.subMenuItems() ?? []) }])
         let skip = actionButton("forward.fill", "Пропустить опенинг") { [weak self] in self?.skipIntro() }
         var actions: [UIView] = [skip, speedButton, subButton, qualityButton]
         if playback.hasNext { let b = actionButton("forward.end.fill", "Следующая") { [weak self] in self?.closePlayer(next: true) }; b.accessibilityLabel = "Следующая серия"; nextButton = b; actions.append(b) }
@@ -150,6 +152,9 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         vlc.drawable = surface; vlc.delegate = self
         UIApplication.shared.isIdleTimerDisabled = true
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
+        timer?.tolerance = 0.1
+        NotificationCenter.default.addObserver(self, selector: #selector(enteredBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(savePlace), name: UIApplication.willResignActiveNotification, object: nil)
         Task { await prepare() }
     }
     override func viewDidAppear(_ animated: Bool) {
@@ -194,7 +199,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     }
     // Звук включается только после первого показанного кадра — так же, как на ТВ.
     func waitForFrame() { waitingForFrame = true; frameBaseline = vlc.time.intValue; waitStarted = Date(); loading.startAnimating(); loading.isHidden = false; vlc.audio?.volume = 0 }
-    func switchQuality(_ i: Int) { pendingTime = vlc.time.intValue; selected = i; sourceIndex = 0; start() }
+    func switchQuality(_ i: Int) { pendingTime = vlc.time.intValue; selected = i; sourceIndex = 0; qualityButton.configuration?.title = label(playback.options[i].height); start() }
     func seek(by delta: Int32) { seek(to: vlc.time.intValue + delta); flash(delta > 0 ? "+10 с" : "−10 с") }
     func seek(to position: Int32) {
         let length = vlc.media?.length.intValue ?? 0
@@ -219,30 +224,40 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
                 if saved > 0 && saved < length - 60_000 { seek(to: saved) }; pendingTime = 0
             }
             if let file = subtitleFile, !subAttached { subAttached = vlc.addPlaybackSlave(file, type: .subtitle, enforce: true) == 0 }
-            if ticks % 10 == 0 && !ended { HistoryState.savePosition(playback.key, Int(now)); saveFraction(now, length) }
+            if ticks % 30 == 0 && !ended { HistoryState.savePosition(playback.key, Int(now)); saveFraction(now, length) }
         }
         if waitingForFrame && ((vlc.isPlaying && vlc.hasVideoOut && vlc.time.intValue != frameBaseline) || Date().timeIntervalSince(waitStarted) > 12) {
             waitingForFrame = false; loading.stopAnimating(); loading.isHidden = true; vlc.audio?.volume = 100
         }
-        if !dragging && length > 0 { slider.value = vlc.position }
-        if !dragging { elapsedLabel.text = clock(now / 1000); remainingLabel.text = "−" + clock(max(0, length - now) / 1000) }
-        let playing = vlc.isPlaying
-        playButton.configuration?.image = UIImage(systemName: playing ? "pause.fill" : "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 50, weight: .semibold))
-        playButton.accessibilityLabel = playing ? "Пауза" : "Продолжить"
-        let h = playback.options[selected].height
-        qualityButton.configuration?.title = label(h)
+        // Экран не гаснет, пока серия идёт или грузится и пока идёт отсчёт до следующей; на паузе и после конца он засыпает как обычно.
+        let state = vlc.state
+        keepAwake(!errorShown && (countdown > 0 || waitingForFrame || (state != .paused && state != .ended && state != .stopped && state != .error)))
         if !(stateLabel.text ?? "").hasPrefix("Перемотка") || ticks % 6 == 0 {
-            stateLabel.text = subtitleFile == nil ? "" : (subAttached ? "" : "Загрузка субтитров…")
+            setText(stateLabel, subtitleFile == nil ? "" : (subAttached ? "" : "Загрузка субтитров…"))
         }
+        if !chrome.isHidden { refreshChrome() }
         // «Следующая серия»: на титрах в конце и с отсчётом после окончания.
         setFloating(upNextButton, visible: playback.hasNext && length > 0 && (ended || length - now < Self.creditsWindow))
-        rebuildSubMenu()
         if vlc.state == .ended && !ended { finishedEpisode() }
         if vlc.state == .error {
             if sourceIndex < playback.options[selected].alternatives.count { sourceIndex += 1; pendingTime = max(pendingTime, vlc.time.intValue); start() }
             else { showError("Не удалось воспроизвести этот источник. Выберите другой перевод или качество.") }
         }
     }
+    // Время, полоса и значок паузы обновляются, только пока управление видно: скрытая панель не перерисовывается дважды в секунду.
+    func refreshChrome() {
+        let length = vlc.media?.length.intValue ?? 0, now = max(0, vlc.time.intValue)
+        if !dragging && length > 0 && slider.value != vlc.position { slider.value = vlc.position }
+        if !dragging { setText(elapsedLabel, clock(now / 1000)); setText(remainingLabel, "−" + clock(max(0, length - now) / 1000)) }
+        let playing = vlc.isPlaying
+        if shownPlaying != playing {
+            shownPlaying = playing
+            playButton.configuration?.image = UIImage(systemName: playing ? "pause.fill" : "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 50, weight: .semibold))
+            playButton.accessibilityLabel = playing ? "Пауза" : "Продолжить"
+        }
+    }
+    func setText(_ l: UILabel, _ s: String) { if l.text != s { l.text = s } }
+    func keepAwake(_ on: Bool) { if UIApplication.shared.isIdleTimerDisabled != on { UIApplication.shared.isIdleTimerDisabled = on } }
     // Доля просмотренного — для полосок прогресса в списке серий и на полке «Продолжить».
     func saveFraction(_ t: Int32, _ length: Int32) { guard playback.episodeId != 0, length > 0 else { return }; UserDefaults.standard.set(min(1, Double(t) / Double(length)), forKey: "watch-\(playback.episodeId)") }
     func setFloating(_ b: UIButton, visible: Bool) {
@@ -264,19 +279,19 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     }
     func cancelCountdown() { guard countdown > 0 else { return }; countdown = 0; countdownTimer?.invalidate(); upNextButton.configuration?.title = "Следующая серия" }
     func clock(_ s: Int32) -> String { s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60) }
-    func rebuildSubMenu() {
+    func subMenuItems() -> [UIMenuElement] {
         let ids = vlc.videoSubTitlesIndexes as? [NSNumber] ?? []
         let names = vlc.videoSubTitlesNames as? [String] ?? []
         var tracks = ids.enumerated().map { i, id in UIAction(title: id.intValue < 0 ? "Выключить" : (i < names.count ? names[i] : "Субтитры"), state: vlc.currentVideoSubTitleIndex == id.int32Value ? .on : .off) { [weak self] _ in self?.vlc.currentVideoSubTitleIndex = id.int32Value } }
         if tracks.isEmpty { tracks = [UIAction(title: "Нет дорожек", attributes: .disabled) { _ in }] }
         let delay = String(format: "%+.1f с", Double(vlc.currentVideoSubTitleDelay) / 1e6).replacingOccurrences(of: ".", with: ",")
         let timing = UIMenu(title: "Задержка · \(delay)", options: .displayInline, children: [UIAction(title: "Раньше на 0,5 с") { [weak self] _ in self?.vlc.currentVideoSubTitleDelay -= 500_000 }, UIAction(title: "Позже на 0,5 с") { [weak self] _ in self?.vlc.currentVideoSubTitleDelay += 500_000 }, UIAction(title: "Сбросить задержку") { [weak self] _ in self?.vlc.currentVideoSubTitleDelay = 0 }])
-        subButton.menu = UIMenu(title: "Субтитры", children: [UIMenu(options: .displayInline, children: tracks), timing])
+        return [UIMenu(options: .displayInline, children: tracks), timing]
     }
-    func showError(_ message: String) { guard presentedViewController == nil, !isClosing else { return }; vlc.pause(); let alert = UIAlertController(title: "Yoru Anime", message: message, preferredStyle: .alert); alert.addAction(UIAlertAction(title: "Закрыть", style: .default) { [weak self] _ in self?.closePlayer() }); present(alert, animated: true) }
+    func showError(_ message: String) { guard presentedViewController == nil, !isClosing else { return }; vlc.pause(); errorShown = true; keepAwake(false); let alert = UIAlertController(title: "Yoru Anime", message: message, preferredStyle: .alert); alert.addAction(UIAlertAction(title: "Закрыть", style: .default) { [weak self] _ in self?.closePlayer() }); present(alert, animated: true) }
 
     // MARK: Chrome
-    func showPanel() { hideWork?.cancel(); guard chrome.alpha < 1 else { return }; chrome.isHidden = false; UIView.animate(withDuration: 0.2) { self.chrome.alpha = 1 } }
+    func showPanel() { hideWork?.cancel(); guard chrome.alpha < 1 else { return }; chrome.isHidden = false; refreshChrome(); UIView.animate(withDuration: 0.2) { self.chrome.alpha = 1 } }
     func hidePanel() { UIView.animate(withDuration: 0.3, animations: { self.chrome.alpha = 0 }) { _ in if self.chrome.alpha == 0 { self.chrome.isHidden = true } } }
     func scheduleHide() { hideWork?.cancel(); let w = DispatchWorkItem { [weak self] in guard let self, !self.isClosing, self.vlc.isPlaying, !self.dragging else { return }; self.hidePanel() }; hideWork = w; DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: w) }
     func playPause() {
@@ -290,6 +305,18 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     @objc func seekEnd() { let length = vlc.media?.length.intValue ?? 0; dragging = false; seek(to: Int32(Float(length) * slider.value)) }
     @objc func togglePanel() { cancelCountdown(); if chrome.isHidden || chrome.alpha < 1 { showPanel(); scheduleHide() } else { hidePanel() } }
     @objc func doubleTapSeek(_ g: UITapGestureRecognizer) { cancelCountdown(); seek(by: g.location(in: view).x < view.bounds.midX ? -10_000 : 10_000) }
+    // Ушли из приложения: место сохраняется, а идущая серия встаёт на паузу — без фонового режима iOS всё равно остановит плеер,
+    // а так видео не декодируется впустую перед этим и после возвращения продолжается с того же кадра.
+    @objc func enteredBackground() {
+        guard !isClosing else { return }
+        savePlace()
+        if vlc.isPlaying { vlc.pause(); showPanel() }
+    }
+    // Место сохраняется уже при потере фокуса: из переключателя приложений плеер могут закрыть, не уводя его в фон.
+    @objc func savePlace() {
+        let t = vlc.time.intValue
+        if !isClosing && resumed && !ended && t > 0 { HistoryState.savePosition(playback.key, Int(t)); saveFraction(t, vlc.media?.length.intValue ?? 0) }
+    }
     func closePlayer(next: Bool = false) {
         guard !isClosing else { return }
         let t = vlc.time.intValue, l = vlc.media?.length.intValue ?? 0

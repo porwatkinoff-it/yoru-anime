@@ -26,6 +26,7 @@ struct RootView: View {
     @Environment(\.scenePhase) var phase
     @Environment(\.openURL) var openURL
     @State var update: AppRelease?
+    @State var wasBackground = false
     var body: some View {
         TabView(selection: $store.tab) {
             NavigationStack(path: $store.homePath) { HomeView().routes() }.tabItem { Label("Главная", systemImage: "house.fill") }.tag(0)
@@ -39,7 +40,12 @@ struct RootView: View {
             Button("Скачать на GitHub") { openURL(r.page) }
             Button("Позже", role: .cancel) {}
         } message: { r in Text("Сейчас установлена \(Updater.current).\(r.notes.isEmpty ? "" : "\n\n" + String(r.notes.prefix(600)))") }
-        .onChange(of: phase) { if phase == .active { Task { await store.sync(); await store.refreshFinished() } } }
+        // Синхронизация с телевизором — только после настоящего возврата в приложение: Пункт управления, уведомления
+        // и первый показ при запуске тоже дают .active, но ради них поиск приставки в сети (до 6 с) не запускается.
+        .onChange(of: phase) {
+            if phase == .background { wasBackground = true }
+            else if phase == .active && wasBackground { wasBackground = false; Task { await store.sync(); await store.refreshFinished() } }
+        }
         .onAppear {
             #if DEBUG
             if let t = QA.value("--tab").flatMap(Int.init) { store.tab = t }
@@ -261,8 +267,7 @@ struct Hero: View {
         if let item {
             let favorite = store.favorites.contains(item)
             ZStack(alignment: .bottom) {
-                CachedPoster(url: item.posterSmall, fill: true).frame(height: 560).frame(maxWidth: .infinity).clipped().blur(radius: 26).opacity(0.55)
-                    .mask(LinearGradient(colors: [.clear, .black, .black, .clear], startPoint: .top, endPoint: .bottom))
+                BlurredBackdrop(url: item.posterSmall, radius: 26, fade: true).frame(height: 560).frame(maxWidth: .infinity).opacity(0.55)
                 LinearGradient(colors: [Night.bg.opacity(0), Night.bg.opacity(0.65), Night.bg], startPoint: .top, endPoint: .bottom)
                 VStack(spacing: 14) {
                     NavigationLink(value: Route.title(item)) {
@@ -599,7 +604,7 @@ struct DetailView: View {
     }
     var header: some View {
         ZStack(alignment: .bottomLeading) {
-            CachedPoster(url: shown.posterSmall, fill: true).frame(height: 330).frame(maxWidth: .infinity).clipped().blur(radius: 24).opacity(0.6)
+            BlurredBackdrop(url: shown.posterSmall, radius: 24).frame(height: 330).frame(maxWidth: .infinity).opacity(0.6)
             LinearGradient(colors: [Night.bg.opacity(0.2), Night.bg.opacity(0.7), Night.bg], startPoint: .top, endPoint: .bottom)
             HStack(alignment: .bottom, spacing: 16) {
                 CachedPoster(url: shown.poster, fill: true).frame(width: Metrics.regular ? 170 : 124, height: Metrics.regular ? 255 : 186).clipShape(RoundedRectangle(cornerRadius: 14))

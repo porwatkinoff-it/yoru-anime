@@ -38,6 +38,8 @@ struct DownloadItem: Codable, Identifiable, Equatable {
     @Published var wifiOnly = UserDefaults.standard.object(forKey: "dl-wifi") as? Bool ?? true { didSet { UserDefaults.standard.set(wifiOnly, forKey: "dl-wifi") } }
     @Published var autoDelete = UserDefaults.standard.bool(forKey: "dl-autodelete") { didSet { UserDefaults.standard.set(autoDelete, forKey: "dl-autodelete") } }
     var backgroundCompletion: (() -> Void)?
+    // Когда прогресс каждой загрузки последний раз показывался на экране.
+    private var published: [Int: TimeInterval] = [:]
     nonisolated let folder: URL = {
         let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Downloads", isDirectory: true)
         try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
@@ -170,9 +172,11 @@ extension DownloadCenter: URLSessionDownloadDelegate {
         guard let id = downloadTask.taskDescription.flatMap(Int.init) else { return }
         MainActor.assumeIsolated {
             guard let i = items.firstIndex(where: { $0.id == id }) else { return }
-            // Публикуем не чаще, чем раз в процент, — иначе список перерисовывается сотни раз в секунду.
-            let total = max(totalBytesExpectedToWrite, 0), step = max(total / 100, 1 << 20)
-            if totalBytesWritten - items[i].bytes >= step || items[i].total != total { items[i].bytes = totalBytesWritten; items[i].total = total; items[i].state = .running }
+            // Публикуем не чаще раза в секунду и не мельче процента — иначе список перерисовывается десятки раз в секунду.
+            let total = max(totalBytesExpectedToWrite, 0), step = max(total / 100, 1 << 20), now = ProcessInfo.processInfo.systemUptime
+            if items[i].total != total || (totalBytesWritten - items[i].bytes >= step && now - (published[id] ?? 0) >= 1) {
+                items[i].bytes = totalBytesWritten; items[i].total = total; items[i].state = .running; published[id] = now
+            }
         }
     }
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
