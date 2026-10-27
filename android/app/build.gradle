@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 android {
  namespace 'com.resvvt.nightanime'
  compileSdk 35
- defaultConfig { applicationId 'com.resvvt.nightanime'; minSdk 28; targetSdk 35; versionCode 24; versionName '2.0.12'; ndk { abiFilters 'armeabi-v7a','arm64-v8a' } }
+ defaultConfig { applicationId 'com.resvvt.nightanime'; minSdk 28; targetSdk 35; versionCode 25; versionName '2.0.13'; ndk { abiFilters 'armeabi-v7a','arm64-v8a' } }
  signingConfigs { personal { storeFile file(System.getenv('KEYSTORE_PATH')); storePassword System.getenv('KEYSTORE_PASSWORD'); keyAlias System.getenv('KEY_ALIAS') ?: 'nighttv'; keyPassword System.getenv('KEY_PASSWORD') } }
  buildTypes { release { signingConfig signingConfigs.personal; minifyEnabled false } }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }

@@ -1,7 +1,7 @@
 {
   "name": "yoru-anime",
   "productName": "Yoru Anime",
-  "version": "2.0.12",
+  "version": "2.0.13",
   "description": "Аниме с Anime 365 на компьютере",
   "main": "src/main.js",
   "author": "porwatkinoff-it",
