@@ -111,9 +111,10 @@ module.exports = function downloads({ api, UA, send, wrap }) {
           const { value, done } = await reader.read();
           if (done) break;
           if (failed) throw failed;
-          if (!out.write(Buffer.from(value))) await new Promise(r => out.once('drain', r));
+          // Буфер пишется как есть, без копии; проценты в окно — раз в секунду.
+          if (!out.write(Buffer.from(value.buffer, value.byteOffset, value.byteLength))) await new Promise(r => out.once('drain', r));
           d.bytes += value.length;
-          if (Date.now() - last > 500) { last = Date.now(); publish(); }
+          if (Date.now() - last > 1000) { last = Date.now(); publish(); }
         }
       } finally { await new Promise(r => out.end(r)); }
       if (failed) throw failed;
@@ -185,9 +186,10 @@ module.exports = function downloads({ api, UA, send, wrap }) {
       if (start > end || start >= size) return new Response('', { status: 416, headers: { 'Content-Range': `bytes */${size}` } });
       status = 206;
     }
-    const stream = fs.createReadStream(f, { start, end });
+    // Куски по 1 МБ без копирования: в 16 раз меньше пробуждений, чем со стандартными 64 КБ.
+    const stream = fs.createReadStream(f, { start, end, highWaterMark: 1 << 20 });
     const body = new ReadableStream({
-      start(c) { stream.on('data', b => { c.enqueue(new Uint8Array(b)); if (c.desiredSize <= 0) stream.pause(); }); stream.on('end', () => c.close()); stream.on('error', e => c.error(e)); },
+      start(c) { stream.on('data', b => { c.enqueue(new Uint8Array(b.buffer, b.byteOffset, b.byteLength)); if (c.desiredSize <= 0) stream.pause(); }); stream.on('end', () => c.close()); stream.on('error', e => c.error(e)); },
       pull() { stream.resume(); },
       cancel() { stream.destroy(); }
     });

@@ -122,7 +122,7 @@ async function fetchFile(url, file, onProgress) {
   for (;;) {
     const { value, done: end } = await reader.read();
     if (end) break;
-    if (!out.write(Buffer.from(value))) await new Promise(r => out.once('drain', r));
+    if (!out.write(Buffer.from(value.buffer, value.byteOffset, value.byteLength))) await new Promise(r => out.once('drain', r));
     done += value.length;
     if (done - last > 1 << 20) { last = done; onProgress(done, total); }
   }
@@ -202,7 +202,13 @@ app.whenReady().then(() => {
     pendingNames.delete(item.getURL());
     if (target) item.setSavePath(target);
     const id = item.getURL();
-    item.on('updated', () => win?.webContents.send('downloadProgress', { id, name: path.basename(item.getSavePath()), received: item.getReceivedBytes(), total: item.getTotalBytes() }));
+    // Прогресс в окно — не чаще раза в секунду.
+    let last = 0;
+    item.on('updated', () => {
+      if (Date.now() - last < 1000) return;
+      last = Date.now();
+      win?.webContents.send('downloadProgress', { id, name: path.basename(item.getSavePath()), received: item.getReceivedBytes(), total: item.getTotalBytes() });
+    });
     item.once('done', (_ev, state) => win?.webContents.send('downloadProgress', { id, name: path.basename(item.getSavePath()), state, file: item.getSavePath() }));
   });
   createWindow();

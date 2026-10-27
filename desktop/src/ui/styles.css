@@ -49,7 +49,9 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .back { width: 38px; height: 38px; border-radius: 50%; background: var(--raised); display: grid; place-items: center; flex: none; }
 .back:hover { background: #2a3950; }
 .top-bar { position: sticky; top: 0; z-index: 5; height: 0; }
-.top-bar .back { position: absolute; left: 24px; top: 20px; backdrop-filter: blur(16px); }
+/* Без backdrop-filter: размытие под кнопкой пересчитывалось в каждом кадре прокрутки. */
+.top-bar .back { position: absolute; left: 24px; top: 20px; background: rgba(32, 44, 62, .95); }
+.top-bar .back:hover { background: #2a3950; }
 
 /* Карточки */
 .shelf { margin-bottom: 30px; }
@@ -63,13 +65,13 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 22px 16px; }
 .card { text-align: left; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .poster { position: relative; aspect-ratio: 2 / 3; border-radius: var(--radius); overflow: hidden; background: var(--surface); box-shadow: 0 6px 18px rgba(0,0,0,.28); transition: transform .18s ease, box-shadow .18s ease; }
-.poster img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .3s; }
+.poster img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; }
 .poster img.loaded { opacity: 1; }
 .card:hover .poster, .card:focus-visible .poster { transform: translateY(-3px) scale(1.02); box-shadow: 0 12px 28px rgba(0,0,0,.45), 0 0 0 2px rgba(237,244,255,.6); }
 .card:focus-visible { outline: none; }
 .card .t { font-weight: 600; font-size: 14px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .card .s { color: var(--muted); font-size: 12.5px; margin-top: -4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.score { position: absolute; top: 8px; left: 8px; padding: 3px 7px; border-radius: 8px; background: rgba(8, 12, 20, .78); backdrop-filter: blur(8px); font-weight: 700; font-size: 12px; }
+.score { position: absolute; top: 8px; left: 8px; padding: 3px 7px; border-radius: 8px; background: rgba(8, 12, 20, .86); font-weight: 700; font-size: 12px; }
 .score.high { color: var(--score-high); } .score.mid { color: var(--score-mid); } .score.low { color: var(--score-low); }
 .badge-new { position: absolute; bottom: 8px; left: 8px; padding: 3px 7px; border-radius: 7px; background: var(--fresh); color: #2a1b05; font-size: 10.5px; font-weight: 800; letter-spacing: .4px; }
 .poster .progress { position: absolute; left: 8px; right: 8px; bottom: 8px; height: 4px; border-radius: 4px; background: rgba(255,255,255,.22); overflow: hidden; }
@@ -82,7 +84,8 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 
 /* Герой главной */
 .hero { position: relative; height: 430px; margin: -28px -36px 34px; overflow: hidden; display: flex; align-items: flex-end; }
-.hero .bg { position: absolute; inset: -40px; background-size: cover; background-position: center 30%; filter: blur(34px) saturate(1.25) brightness(.55); transform: scale(1.1); }
+/* .bg — маленький холст с заранее размытым постером (см. backdrop() в app.js). */
+.hero .bg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; object-position: center 30%; }
 .hero .shade { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(10,16,28,.92) 0%, rgba(10,16,28,.55) 55%, rgba(10,16,28,.2) 100%), linear-gradient(0deg, var(--bg) 0%, transparent 45%); }
 .hero .art { position: absolute; right: 7%; bottom: 40px; height: 340px; aspect-ratio: 2/3; border-radius: 18px; background-size: cover; background-position: center; box-shadow: 0 24px 60px rgba(0,0,0,.55); }
 .hero .info { position: relative; padding: 0 36px 46px; max-width: 640px; }
@@ -115,7 +118,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 
 /* Страница аниме */
 .detail-hero { position: relative; margin: -28px -36px 0; padding: 70px 36px 30px; overflow: hidden; }
-.detail-hero .bg { position: absolute; inset: -60px; background-size: cover; background-position: center; filter: blur(50px) saturate(1.3) brightness(.45); }
+.detail-hero .bg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; }
 .detail-hero .shade { position: absolute; inset: 0; background: linear-gradient(0deg, var(--bg) 0%, rgba(10,16,28,.4) 60%, rgba(10,16,28,.2)); }
 .detail-top { position: relative; display: flex; gap: 32px; align-items: flex-end; }
 .detail-top .poster { width: 230px; flex: none; box-shadow: 0 20px 50px rgba(0,0,0,.5); }
@@ -172,12 +175,12 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .state .btn { margin-top: 14px; }
 .spinner { width: 30px; height: 30px; border-radius: 50%; border: 3px solid rgba(255,255,255,.12); border-top-color: var(--accent); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.skeleton { background: linear-gradient(90deg, var(--surface) 0%, #1d2b40 50%, var(--surface) 100%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
-@keyframes shimmer { to { background-position: -200% 0; } }
+/* Заглушки без бегущего блика: он перерисовывал страницу в каждом кадре, пока грузятся полки. */
+.skeleton { background: #1a273b; }
 .skel-card { aspect-ratio: 2/3; border-radius: var(--radius); }
 
 /* Окна поверх */
-.modal-back { position: fixed; inset: 0; background: rgba(3, 6, 12, .62); backdrop-filter: blur(6px); display: grid; place-items: center; z-index: 50; animation: fade .15s; }
+.modal-back { position: fixed; inset: 0; background: rgba(3, 6, 12, .74); display: grid; place-items: center; z-index: 50; animation: fade .15s; }
 .modal { width: min(560px, calc(100vw - 40px)); max-height: calc(100vh - 80px); overflow: auto; background: #131e2f; border: 1px solid var(--stroke); border-radius: 20px; padding: 22px; box-shadow: 0 30px 80px rgba(0,0,0,.6); }
 .modal h3 { margin: 0 0 4px; font-size: 19px; }
 .modal .hint { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
@@ -268,7 +271,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .dl-ico svg { width: 17px; height: 17px; }
 .dl-row.done .dl-ico { background: var(--accent); color: var(--on-accent); }
 .dl-row.failed .dl-ico { color: var(--score-low); }
-.dl-bar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--progress); transition: width .4s; }
+.dl-bar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--progress); }
 .dl-row .btn.icon { height: auto; border-radius: 12px; width: 48px; }
 .seg { display: flex; gap: 4px; }
 .seg button { padding: 4px 10px; border-radius: 8px; color: var(--muted); font-weight: 600; font-size: 13px; }

@@ -39,7 +39,9 @@ export async function init() {
 }
 function paint() {
   const busy = items.filter(d => d.state === 'queued' || d.state === 'running').length;
-  const c = $('#nav-downloads .count'); c.hidden = !busy; c.textContent = busy;
+  const c = $('#nav-downloads .count');
+  if (c.hidden !== !busy) c.hidden = !busy;
+  if (c.textContent !== String(busy)) c.textContent = busy;
   paintMarks();
   listeners.forEach(fn => fn());
 }
@@ -55,7 +57,15 @@ export function mark(epId) {
     : ['run', ico.wait, 'В очереди'];
   return `<span class="ep-dl ${cls}" data-dl="${epId}" title="${esc(title)}">${inner}</span>`;
 }
-function paintMarks() { document.querySelectorAll('.ep-dl[data-dl]').forEach(el => { el.outerHTML = mark(+el.dataset.dl); }); }
+// Значок заменяем, только если он правда изменился, — прогресс приходит каждую секунду.
+const tpl = document.createElement('template');
+function paintMarks() {
+  document.querySelectorAll('.ep-dl[data-dl]').forEach(el => {
+    tpl.innerHTML = mark(+el.dataset.dl);
+    const n = tpl.content.firstElementChild;
+    if (!n) el.remove(); else if (!el.isEqualNode(n)) el.replaceWith(n);
+  });
+}
 
 // Клик по значку на странице аниме.
 export async function episodeClick(it, ep) {
@@ -135,7 +145,11 @@ export function DownloadsView(_r, alive, main) {
       <span style="min-width:0"><b>${esc(d.episodeTitle)}</b><small>${esc(d.translationTitle)} · ${state(d)}</small></span>
       ${d.state === 'running' && d.total ? `<i class="dl-bar" style="width:${d.bytes / d.total * 100}%"></i>` : ''}</button>
     <button class="btn icon" data-act="remove" data-id="${d.id}" title="Удалить">${ico.trash}</button></div>`;
+  // Набор строк и их состояния; пока он прежний, обновляем только проценты.
+  let shape = '';
+  const shapeOf = () => items.map(d => `${d.id}:${d.state}:${d.total ? 1 : 0}`).join(',');
   const draw = () => {
+    shape = shapeOf();
     const groups = new Map();
     for (const d of items) { if (!groups.has(d.seriesId)) groups.set(d.seriesId, []); groups.get(d.seriesId).push(d); }
     page.innerHTML = `<div class="page-head"><h1>Загрузки</h1></div>
@@ -162,6 +176,19 @@ export function DownloadsView(_r, alive, main) {
     if (b.dataset.act === 'remove') window.yoru.dl.remove(id).then(refreshSpace);
     if (b.dataset.act === 'remove-series') window.yoru.dl.remove(items.filter(x => x.seriesId === id).map(x => x.id)).then(refreshSpace);
   });
-  const off = onChange(() => { if (!alive()) return off(); const y = main.scrollTop; draw(); main.scrollTop = y; });
+  const progress = () => {
+    for (const d of items) {
+      if (d.state !== 'running') continue;
+      const b = page.querySelector(`.dl-main[data-id="${d.id}"]`); if (!b) continue;
+      const small = b.querySelector('small'), text = `${d.translationTitle} · ${state(d)}`;
+      if (small.textContent !== text) small.textContent = text;
+      const bar = b.querySelector('.dl-bar'); if (bar) bar.style.width = d.bytes / d.total * 100 + '%';
+    }
+  };
+  const off = onChange(() => {
+    if (!alive()) return off();
+    if (shapeOf() === shape) return progress();
+    const y = main.scrollTop; draw(); main.scrollTop = y;
+  });
   draw(); refreshSpace();
 }

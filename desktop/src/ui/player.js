@@ -23,6 +23,52 @@ const svg = {
   next: '<svg class="fill" viewBox="0 0 24 24"><path d="M5 5.5v13a1 1 0 0 0 1.5.86L16 13.7V18a1 1 0 0 0 2 0V6a1 1 0 0 0-2 0v4.3L6.5 4.64A1 1 0 0 0 5 5.5z"/></svg>'
 };
 
+// Где субтитрам ASS нужен новый кадр. Статичная строка между своим началом и концом не меняется:
+// меняются только границы строк и анимация — \t, \move и \fad в своих окнах, а караоке, Banner и Scroll всю строку.
+function assTimeline(text) {
+  const at = text.indexOf('[Events]'); if (at < 0) return null;
+  const time = s => { const m = /(\d+):(\d+):(\d+)[.:](\d+)/.exec(s); return m ? m[1] * 3600 + m[2] * 60 + +m[3] + m[4] / 100 : NaN; };
+  let fmt = null; const cuts = [], moving = [];
+  for (const raw of text.slice(at + 8).split('\n')) {
+    const line = raw.trimStart();
+    if (line[0] === '[') break;
+    if (line.startsWith('Format:')) fmt = line.slice(7).split(',').map(s => s.trim().toLowerCase());
+    if (!fmt || !line.startsWith('Dialogue:')) continue;
+    const f = line.slice(9).split(','), get = k => f[fmt.indexOf(k)] || '';
+    const a = time(get('start')), b = time(get('end'));
+    if (!(b > a)) continue;
+    cuts.push(a, b);
+    const body = f.slice(fmt.indexOf('text')).join(','), dur = (b - a) * 1000;
+    // Окна анимации в мс от начала строки — по тем же правилам, что у libass; непонятный тег — вся строка.
+    let spans = /^\s*(banner|scroll)/i.test(get('effect')) || /\\(k[fot]?|K)\s*\d/.test(body) ? null : [];
+    for (const [, tag, args] of body.matchAll(/\\(t|move|fade?)\s*\(([^\\)]*)/g)) {
+      if (!spans) break;
+      const n = args.split(',').map(x => parseFloat(x)), bad = n.findIndex(x => !isFinite(x)), cnt = bad < 0 ? n.length : bad;
+      if (tag === 't' && (cnt === 2 || cnt === 3)) spans.push([n[0], n[1] || dur]);
+      else if (tag === 'move' && cnt === 6 && (n[4] > 0 || n[5] > 0)) spans.push([n[4], n[5]]);
+      else if (tag !== 't' && tag !== 'move' && cnt === 2) spans.push([0, n[0]], [dur - n[1], dur]);
+      else if (tag !== 't' && tag !== 'move' && cnt === 7) spans.push([n[3], n[4]], [n[5], n[6]]);
+      else spans = null;
+    }
+    if (!spans) { moving.push([a, b]); continue; }
+    for (const [x, y] of spans) {
+      const from = a + Math.max(0, Math.min(x, y)) / 1000, to = a + Math.min(dur, Math.max(x, y)) / 1000;
+      if (to > from) { cuts.push(from, to); moving.push([from, to]); }
+    }
+  }
+  if (!fmt) return null;
+  cuts.sort((x, y) => x - y);
+  moving.sort((x, y) => x[0] - y[0]);
+  const runs = [];
+  for (const m of moving) { const l = runs[runs.length - 1]; if (l && m[0] <= l[1]) l[1] = Math.max(l[1], m[1]); else runs.push(m); }
+  // Сколько элементов массива не позже t — двоичным поиском.
+  const count = (list, t, key) => { let lo = 0, hi = list.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (key(list[mid]) <= t) lo = mid + 1; else hi = mid; } return lo; };
+  return {
+    cut: t => { const k = count(cuts, t, x => x); return [cuts[k - 1] ?? -Infinity, cuts[k] ?? Infinity]; },
+    moving: t => { const k = count(runs, t, r => r[0]); return k > 0 && t < runs[k - 1][1]; }
+  };
+}
+
 let current = null;
 export function openPlayer(pb, opts) { current?.close(false); current = new Player(pb, opts); }
 
@@ -70,6 +116,9 @@ class Player {
       <div class="p-flash"></div>`;
     document.body.append(el);
     const v = this.v = el.querySelector('video');
+    const q = s => el.querySelector(s);
+    this.ui = { fill: q('.fill'), knob: q('.knob'), time: q('.time'), buf: q('.buf'), pill: q('.pill'), toggle: q('[data-a=toggle]') };
+    this.idle = false; this.poked = -Infinity;
     v.volume = D.S.get('volume', 1); v.muted = D.S.get('muted', false);
     v.playbackRate = D.S.get('speed', 1);
     el.querySelector('.p-volume').value = v.volume;
@@ -112,11 +161,52 @@ class Player {
         video: this.v, subContent: this.subText,
         workerUrl: vendor('jassub-worker.js'), wasmUrl: vendor('jassub-worker.wasm'), modernWasmUrl: vendor('jassub-worker-modern.wasm'),
         availableFonts: { 'liberation sans': vendor('default.woff2') }, fallbackFont: 'liberation sans',
+        // На Retina холст был бы в 1,5–2 раза выше видео; 1080 строк хватает для резких субтитров.
+        maxRenderHeight: 1080,
         timeOffset: this.subDelay
       });
+      const line = assTimeline(this.subText);
+      if (line) this.pace = this.paceSubs(this.subs, line);
     } catch (e) { this.flash('Субтитры не загрузились'); console.error(e); }
   }
-  detachSubs() { try { this.subs?.destroy(); } catch {} this.subs = null; }
+  detachSubs() { this.pace?.stop(); this.pace = null; try { this.subs?.destroy(); } catch {} this.subs = null; }
+  // JASSUB зовёт libass на каждом кадре видео, даже когда на экране та же строка. Кадры смотрим
+  // только около границ строк и пока идёт анимация, рисуем — когда граница пройдена, а между
+  // границами ждём таймером до следующей.
+  paceSubs(s, line) {
+    const v = this.v, AHEAD = 0.12, AFTER = 0.06, EPS = 0.002;
+    // gen отсекает запросы кадра, ставшие лишними после перемотки или паузы; drawn — время libass на холсте.
+    let pending = true, gen = 0, timer = 0, meta = null, drawn = NaN, kicked = 0;
+    const want = force => {
+      if (s._destroyed || (pending && !force)) return;
+      pending = true; const g = ++gen;
+      v.requestVideoFrameCallback((_now, m) => { if (g === gen) frame(m); });
+    };
+    const frame = m => {
+      pending = false; if (s._destroyed) return;
+      meta = m; clearTimeout(timer);
+      const t = m.mediaTime + s.timeOffset, [prev, next] = line.cut(t);
+      // Пока граница не пройдена и ничего не движется, на холсте та же картинка (EPS — запас на округление в libass).
+      const inside = x => x - EPS > prev && x + EPS < next;
+      if (line.moving(t) || !(inside(drawn) && inside(t))) { drawn = t; s.manualRender(m); }
+      if (line.moving(t) || next - t < AHEAD || t - prev < AFTER) want();
+      // Сразу после перемотки или смены скорости часы видео ещё догоняют — спим не дольше полсекунды.
+      else if (!v.paused && next < Infinity) timer = setTimeout(() => want(), Math.min((next - t - AHEAD) / v.playbackRate * 1000, performance.now() - kicked < 500 ? 500 : Infinity));
+    };
+    // Первый кадр JASSUB запрашивает сам, когда готов воркер.
+    s._handleRVFC = m => { if (!gen) frame(m); };
+    // Перемотка, пауза, скорость, задержка, возврат в окно: перерисовать сейчас и заново решить, когда нужен кадр.
+    const kick = () => {
+      clearTimeout(timer);
+      if (s._destroyed || !meta) return;
+      kicked = performance.now(); drawn = NaN;
+      if (v.paused) s.manualRender({ ...meta, mediaTime: v.currentTime });
+      want(true);
+    };
+    const shown = () => { if (!document.hidden) kick(); };
+    document.addEventListener('visibilitychange', shown);
+    return { kick, stop: () => { clearTimeout(timer); document.removeEventListener('visibilitychange', shown); } };
+  }
 
   listen() {
     const v = this.v, el = this.el;
@@ -124,8 +214,10 @@ class Player {
     v.addEventListener('play', () => this.paintPlay());
     v.addEventListener('pause', () => { this.paintPlay(); this.save(); this.poke(); });
     v.addEventListener('timeupdate', () => this.tick());
+    v.addEventListener('seeked', () => this.save());
     v.addEventListener('progress', () => this.paintBuffer());
     v.addEventListener('ended', () => this.ended());
+    for (const e of ['play', 'pause', 'seeked', 'ratechange']) v.addEventListener(e, () => this.pace?.kick());
     v.addEventListener('volumechange', () => { D.S.set('volume', v.volume); D.S.set('muted', v.muted); el.querySelector('[data-a=mute]').innerHTML = v.muted || !v.volume ? svg.mute : svg.vol; });
     v.addEventListener('click', () => this.toggle());
     v.addEventListener('dblclick', () => this.fullscreen());
@@ -172,9 +264,13 @@ class Player {
     this.offFs = window.yoru.onFullscreen(on => { this.fs = on; el.classList.toggle('fs', on); el.querySelector('[data-a=fs]').innerHTML = on ? svg.unfs : svg.fs; });
   }
   poke() {
-    this.el.classList.remove('idle');
+    // mousemove приходит десятки раз в секунду — таймер переставляем не чаще 4 раз в секунду.
+    const now = performance.now();
+    if (!this.idle && now - this.poked < 250) return;
+    this.poked = now;
+    if (this.idle) { this.idle = false; this.el.classList.remove('idle'); this.tick(); }
     clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => { if (!this.v.paused && !this.menu) this.el.classList.add('idle'); }, 2800);
+    this.idleTimer = setTimeout(() => { if (!this.v.paused && !this.menu) { this.idle = true; this.el.classList.add('idle'); } }, 2800);
   }
   toggle() { const v = this.v; if (v.paused) v.play().catch(() => {}); else v.pause(); }
   seek(d, skip) {
@@ -188,26 +284,31 @@ class Player {
     const f = this.el.querySelector('.p-flash'); f.textContent = text; f.classList.add('show');
     clearTimeout(this.flashTimer); this.flashTimer = setTimeout(() => f.classList.remove('show'), 1400);
   }
-  paintPlay() { this.el.querySelector('[data-a=toggle]').innerHTML = this.v.paused ? svg.play : svg.pause; }
+  paintPlay() { this.ui.toggle.innerHTML = this.v.paused ? svg.play : svg.pause; }
   paintBuffer() {
+    if (this.idle) return;
     const v = this.v, b = v.buffered;
-    for (let i = 0; i < b.length; i++) if (b.start(i) <= v.currentTime + 1) this.el.querySelector('.buf').style.width = (v.duration ? b.end(i) / v.duration * 100 : 0) + '%';
+    for (let i = 0; i < b.length; i++) if (b.start(i) <= v.currentTime + 1) this.ui.buf.style.width = (v.duration ? b.end(i) / v.duration * 100 : 0) + '%';
   }
   tick() {
     const v = this.v, d = v.duration || 0, t = v.currentTime;
     const f = d ? t / d : 0;
-    this.el.querySelector('.fill').style.width = f * 100 + '%';
-    this.el.querySelector('.knob').style.left = f * 100 + '%';
-    this.el.querySelector('.time').textContent = `${fmt(t)} / ${fmt(d)}`;
-    this.paintBuffer();
+    // Пока панель скрыта, полосу и время не перерисовываем.
+    if (!this.idle) {
+      this.ui.fill.style.width = f * 100 + '%';
+      this.ui.knob.style.left = f * 100 + '%';
+      this.ui.time.textContent = `${fmt(t)} / ${fmt(d)}`;
+      this.paintBuffer();
+    }
     if (!d) return;
-    if (Date.now() - this.lastSave > 5000) this.save();
-    if (f > .93 || d - t < 120) D.markDone(this.pb.episodeId);
+    if (Date.now() - this.lastSave > 15000) this.save();
+    if (!this.markedDone && (f > .93 || d - t < 120)) { this.markedDone = true; D.markDone(this.pb.episodeId); }
     // «Следующая серия» в последние 90 секунд.
-    const pill = this.el.querySelector('.pill');
+    const pill = this.ui.pill;
     const show = this.nextTitle && !this.dismissedNext && d - t < NEXT_AT && d > NEXT_AT * 3;
     pill.classList.toggle('show', !!show || this.countdown != null);
-    if (show && this.countdown == null) pill.querySelector('span').textContent = this.nextTitle;
+    const label = pill.querySelector('span');
+    if (show && this.countdown == null && label.textContent !== this.nextTitle) label.textContent = this.nextTitle;
   }
   save() {
     const v = this.v, d = v.duration; if (!d) return;
@@ -225,7 +326,7 @@ class Player {
     const paint = () => { label.textContent = `${this.nextTitle} через ${left}`; };
     this.countdown = setInterval(() => { left--; if (left <= 0) this.close(true); else paint(); }, 1000);
     paint(); pill.classList.add('show');
-    this.el.classList.remove('idle');
+    this.idle = false; this.el.classList.remove('idle');
   }
 
   // ---------- Меню ----------
@@ -257,7 +358,7 @@ class Player {
       <div class="mh">Задержка</div><div class="delay"><button data-d="-0.5">−</button><span>${this.subDelay > 0 ? '+' : ''}${this.subDelay.toFixed(1).replace('.', ',')} с</span><button data-d="0.5">+</button></div>`;
     this.openMenu(anchor, draw(), b => {
       if (b.dataset.on) { this.subsOn = b.dataset.on === '1'; if (this.subsOn) this.attachSubs(); else this.detachSubs(); }
-      if (b.dataset.d) { this.subDelay = Math.round((this.subDelay + +b.dataset.d) * 10) / 10; if (this.subs) this.subs.timeOffset = this.subDelay; }
+      if (b.dataset.d) { this.subDelay = Math.round((this.subDelay + +b.dataset.d) * 10) / 10; if (this.subs) { this.subs.timeOffset = this.subDelay; this.pace?.kick(); } }
       this.menu.innerHTML = draw();
     });
   }

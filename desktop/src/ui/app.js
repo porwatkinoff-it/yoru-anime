@@ -24,6 +24,21 @@ export function toast(text) { const t = $('#toast'); t.textContent = text; t.cla
 const known = new Map();  // id → карточка аниме, для кликов по карточкам
 const keep = it => { known.set(it.id, it); return it; };
 function img(src, cls = '') { return src ? `<img class="${cls}" src="${esc(src)}" loading="lazy" decoding="async" alt="">` : ''; }
+// Размытый фон рисуется один раз в маленький холст: живой CSS blur() пересчитывался в каждом кадре прокрутки.
+const backdrops = new Map();
+function backdrop(src, filter) {
+  const key = src + ' ' + filter;
+  let c = backdrops.get(key);
+  if (!c) {
+    c = document.createElement('canvas'); c.className = 'bg'; c.width = 120; c.height = 180;
+    const im = new Image(); im.src = src;
+    // Постер шире холста, чтобы размытие не темнело к краям. Не загрузился — не запоминаем, в следующий раз попробуем снова.
+    im.decode().then(() => { const x = c.getContext('2d'); x.filter = filter; x.drawImage(im, -16, -24, c.width + 32, c.height + 48); }, () => { if (backdrops.get(key) === c) backdrops.delete(key); });
+    backdrops.set(key, c);
+    if (backdrops.size > 6) backdrops.delete(backdrops.keys().next().value);
+  }
+  return c;
+}
 function card(it, { progress = null, fresh = false } = {}) {
   keep(it);
   const s = it.score > 0 ? `<span class="score ${D.scoreClass(it.score)}">${D.scoreText(it.score)}</span>` : '';
@@ -98,7 +113,7 @@ const loadShelf = params => { const k = JSON.stringify(params); if (!shelfCache.
 
 function Home(_r, alive) {
   const page = document.createElement('div'); page.className = 'page'; main.append(page);
-  page.innerHTML = `<div class="hero"><div class="bg"></div><div class="shade"></div></div><div id="continue"></div><div id="favs"></div><div id="shelves"></div>`;
+  page.innerHTML = `<div class="hero"><div class="shade"></div></div><div id="continue"></div><div id="favs"></div><div id="shelves"></div>`;
   // «Продолжить просмотр»: начатые и недосмотренные.
   const cont = D.history().filter(it => D.lastEpisode(it) && !D.finished(it)).slice(0, 20);
   if (cont.length) $('#continue', page).innerHTML = `<section class="shelf"><div class="shelf-head"><h2>Продолжить просмотр</h2>${arrows()}</div><div class="row wide-row">${cont.map(it => wideCard(it, D.lastEpisodeTitle(it) || 'Продолжить', D.fraction(D.lastEpisode(it)))).join('')}</div></section>`;
@@ -133,11 +148,12 @@ async function hero(page, items) {
   const it = items[Math.min(heroPick, items.length - 1)]; if (!it) return;
   const box = $('.hero', page);
   const paint = summary => {
-    box.innerHTML = `<div class="bg" style="background-image:url('${esc(it.poster)}')"></div><div class="shade"></div><div class="art" style="background-image:url('${esc(it.poster)}')"></div>
+    box.innerHTML = `<div class="shade"></div><div class="art" style="background-image:url('${esc(it.poster)}')"></div>
       <div class="info"><div class="eyebrow">Сейчас выходит</div><h1>${esc(it.title)}</h1>
       <div class="meta">${it.score ? `<span class="score-text" style="color:var(--score-${D.scoreClass(it.score)})">★ ${D.scoreText(it.score)}</span>` : ''}<span>${esc(it.subtitle)}</span>${it.genres.slice(0, 3).map(g => `<span>${esc(g.title)}</span>`).join('')}</div>
       <p>${esc(summary || '')}</p>
       <div class="actions"><button class="btn primary" data-open="${it.id}" data-resume="1">${icon.play}Смотреть</button><button class="btn" data-open="${it.id}">Подробнее</button></div></div>`;
+    if (it.poster) box.prepend(backdrop(it.poster, 'blur(4px) saturate(1.25) brightness(.55)'));
   };
   keep(it); paint(heroDetails.get(it.id) || '');
   if (!heroDetails.has(it.id)) {
@@ -209,7 +225,7 @@ function Schedule(_r, alive) {
       out.innerHTML = days.length ? days.map(d => `<section class="day"><h2>${d.weekday === today ? 'Сегодня' : d.weekday === (today + 6) % 7 ? 'Вчера' : WEEKDAYS[d.weekday]}<small>${d.items.length} ${plural(d.items.length, 'аниме', 'аниме', 'аниме')}</small></h2><div class="sched">${d.items.map(([it, ep]) => {
         keep(it);
         const fresh = Date.now() - ep.uploaded < 86400e3;
-        return `<button data-open="${it.id}"><img src="${esc(it.posterSmall)}" loading="lazy" alt=""><div style="min-width:0"><b>${esc(it.title)}</b><span class="${fresh ? 'fresh' : ''}">${esc(ep.title)} · ${ep.uploaded.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span></div></button>`;
+        return `<button data-open="${it.id}"><img src="${esc(it.posterSmall)}" loading="lazy" decoding="async" alt=""><div style="min-width:0"><b>${esc(it.title)}</b><span class="${fresh ? 'fresh' : ''}">${esc(ep.title)} · ${ep.uploaded.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span></div></button>`;
       }).join('')}</div></section>`).join('') : `<div class="state">Нет выходящих аниме</div>`;
     }).catch(e => { if (!alive()) return; out.innerHTML = errorState(e.message); $('[data-retry]', out).onclick = () => { out.innerHTML = loadingState(); load(); }; });
   };
@@ -317,7 +333,7 @@ function Detail(r, alive) {
       return `<button class="ep ${D.isDone(e.id) ? 'done' : ''} ${e.id === current ? 'current' : ''}" data-ep="${e.id}"><span class="n">${D.isDone(e.id) ? '✓' : e.number > 0 && reg.has(e.id) ? e.number : '•'}</span><span style="min-width:0"><div class="et">${esc(e.title)}</div><div class="ed">${e.id === current && !D.isDone(e.id) ? 'Смотрите сейчас' : esc(date)}</div></span>${O.mark(e.id)}${f > 0 && f < 1 ? `<span class="bar" style="width:${f * 100}%"></span>` : ''}</button>`;
     };
     const firstExtra = eps.findIndex(e => !reg.has(e.id));
-    page.innerHTML = back + `<div class="detail-hero"><div class="bg" style="background-image:url('${esc(full.poster || it.poster)}')"></div><div class="shade"></div>
+    page.innerHTML = back + `<div class="detail-hero"><div class="shade"></div>
       <div class="detail-top"><div class="poster"><img src="${esc(full.poster || it.poster)}" alt=""></div><div style="min-width:0;padding-bottom:6px">
       <h1>${esc(full.title)}</h1>${full.raw.titles?.romaji && full.raw.titles.romaji !== full.title ? `<div class="sub">${esc(full.raw.titles.romaji)}</div>` : ''}
       <div class="meta">${full.score ? `<span class="score-text" style="color:var(--score-${D.scoreClass(full.score)})">★ ${D.scoreText(full.score)}</span>` : ''}${full.kind ? `<span>${esc(full.kind)}</span>` : ''}${full.season ? `<span>${esc(full.season)}</span>` : full.year ? `<span>${full.year}</span>` : ''}${regCount ? `<span>${regCount} ${plural(regCount, 'серия', 'серии', 'серий')}</span>` : ''}</div>
@@ -327,6 +343,8 @@ function Detail(r, alive) {
       ${full.summary ? `<div class="summary clamp">${esc(full.summary)}</div><button class="more" hidden>Ещё</button>` : ''}
       ${seasonList?.length ? `<div class="section-title">Сезоны</div><div class="seasons">${seasonList.map(s => (keep(s.item), `<button class="chip ${s.current ? 'on' : ''}" ${s.current ? '' : `data-season="${s.id}"`}>${esc(s.label)}</button>`)).join('')}</div>` : ''}
       <div id="eps">${data ? (eps.length ? `<div class="section-title">Серии <small>${regCount}</small></div><div class="episodes">${eps.map((e, i) => (i === firstExtra && i > 0 ? '<div class="ep-sep">Трейлеры и спецвыпуски</div>' : '') + epHTML(e)).join('')}</div>` : `<div class="state">Серий пока нет</div>`) : r.error ? errorState(r.error) : loadingState()}</div>`;
+    const bg = full.poster || it.poster;
+    if (bg) $('.detail-hero', page).prepend(backdrop(bg, 'blur(5px) saturate(1.3) brightness(.45)'));
     const sum = $('.summary', page);
     if (sum && sum.scrollHeight > sum.clientHeight + 2) { const m = $('.more', page); m.hidden = false; m.onclick = () => { sum.classList.remove('clamp'); m.remove(); }; }
     $('#fav', page).onclick = () => { D.toggleFavorite(it); if (data) D.seen(it, data.episodes.length); draw(); toast(D.isFavorite(it) ? 'Добавлено в избранное' : 'Убрано из избранного'); };
