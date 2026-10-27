@@ -14,9 +14,18 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'yoru', privileges: { standard: 
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let win;
-const tokenFile = () => path.join(app.getPath('userData'), 'token.bin');
+// Токен входа Anime 365. На Mac шифрование Electron держит свой ключ в связке ключей, а приложение подписано без
+// сертификата Apple: после каждого обновления macOS заново просит пароль от связки, а при отказе вход ломается.
+// Поэтому на Mac токен лежит в файле, который может читать только этот пользователь; на Windows и Linux — как раньше.
+const plainToken = process.platform === 'darwin';
+const tokenFile = () => path.join(app.getPath('userData'), plainToken ? 'token' : 'token.bin');
 function readToken() {
   try {
+    if (plainToken) {
+      // token.bin прошлых версий без связки ключей не прочитать: удаляем его, и войти нужно один раз заново.
+      fs.rmSync(path.join(app.getPath('userData'), 'token.bin'), { force: true });
+      return fs.readFileSync(tokenFile(), 'utf8').trim();
+    }
     const b = fs.readFileSync(tokenFile());
     return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(b) : b.toString('utf8');
   } catch { return ''; }
@@ -24,7 +33,8 @@ function readToken() {
 function saveToken(t) {
   try {
     if (!t) return fs.rmSync(tokenFile(), { force: true });
-    fs.writeFileSync(tokenFile(), safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(t) : Buffer.from(t), { mode: 0o600 });
+    const data = plainToken ? t : safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(t) : Buffer.from(t);
+    fs.writeFileSync(tokenFile(), data, { mode: 0o600 });
   } catch {}
 }
 let token = '';
