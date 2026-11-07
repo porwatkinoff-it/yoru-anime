@@ -47,7 +47,7 @@ jobs:
           workspaces: desktop-tauri/src-tauri -> target
           key: ${{ matrix.name }}
 
-      - name: Linux: зависимости WebKitGTK
+      - name: "Linux: зависимости WebKitGTK"
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
