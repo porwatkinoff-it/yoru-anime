@@ -5,8 +5,10 @@
   const listen = (ch, fn) => window.__TAURI__.event.listen(ch, fn);
   const wrap = p => p.then(data => ({ data }), e => ({ error: String(e) }));
   const on = ch => fn => { const un = listen(ch, e => Array.isArray(e.payload) ? fn(...e.payload) : fn(e.payload)); return () => un.then(f => f()); };
-  const nav = navigator.userAgent;
-  const platform = /Mac/.test(nav) ? 'darwin' : /Win/.test(nav) ? 'win32' : 'linux';
+  // User-Agent у нас свой («NightAnime/1.0 (macOS)»), поэтому систему берём из navigator.platform:
+  // WebKit на Mac даёт «MacIntel» (и на Apple Silicon), WebView2 — «Win32», WebKitGTK — «Linux …».
+  const sys = navigator.platform || '';
+  const platform = /^Mac/i.test(sys) ? 'darwin' : /^Win/i.test(sys) ? 'win32' : 'linux';
   window.yoru = {
     platform,
     api: (path, params, auth) => wrap(invoke('api', { path, params: params || {}, auth: !!auth })),
