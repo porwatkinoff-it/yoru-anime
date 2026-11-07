@@ -92,6 +92,7 @@ class Player {
     const el = this.el = document.createElement('div');
     el.id = 'player';
     el.innerHTML = `<video playsinline preload="auto"></video>
+      <div class="p-loading"><div class="spinner"></div></div>
       <div class="p-chrome">
         <div class="p-top"><button class="pbtn" data-a="close" title="Назад (Esc)">${svg.close}</button><div class="titles"><b>${esc(this.pb.title)}</b><span>${esc(this.pb.episodeTitle)}</span></div></div>
         <div class="p-bottom">
@@ -128,6 +129,7 @@ class Player {
   load(at) {
     const v = this.v;
     this.error(null);
+    this.busy(true);
     v.src = this.urls[this.urlIndex];
     v.playbackRate = D.S.get('speed', 1);
     const start = () => { if (at > 0 && at < v.duration - 60) v.currentTime = at; v.play().catch(() => {}); this.attachSubs(); };
@@ -145,6 +147,7 @@ class Player {
   error(msg) {
     this.el.querySelector('.p-error')?.remove();
     if (!msg) return;
+    this.busy(false);
     this.el.insertAdjacentHTML('beforeend', `<div class="p-error"><div><b>Не удалось воспроизвести</b><br>${esc(msg)}<br><br><button class="btn" data-a="retry">Повторить</button> <button class="btn" data-a="close">Закрыть</button></div></div>`);
   }
   async attachSubs() {
@@ -208,8 +211,21 @@ class Player {
     return { kick, stop: () => { clearTimeout(timer); document.removeEventListener('visibilitychange', shown); } };
   }
 
+  // Значок загрузки: при открытии, перемотке и смене качества, пока видео ждёт данных.
+  // Появляется через 250 мс, чтобы быстрая перемотка по уже скачанному не мигала.
+  busy(on) {
+    clearTimeout(this.busyTimer);
+    if (!on) return this.el.classList.remove('loading');
+    if (!this.el.classList.contains('loading')) this.busyTimer = setTimeout(() => this.el.classList.add('loading'), 250);
+  }
   listen() {
     const v = this.v, el = this.el;
+    v.addEventListener('waiting', () => this.busy(true));
+    v.addEventListener('seeking', () => this.busy(true));
+    v.addEventListener('playing', () => this.busy(false));
+    // На паузе ждать нечего, как только кадр готов.
+    v.addEventListener('canplay', () => { if (v.paused) this.busy(false); });
+    v.addEventListener('seeked', () => { if (v.paused ? v.readyState >= 2 : v.readyState >= 3) this.busy(false); });
     v.addEventListener('error', () => { if (!this.closed && v.src) this.fallback(); });
     v.addEventListener('play', () => this.paintPlay());
     v.addEventListener('pause', () => { this.paintPlay(); this.save(); this.poke(); });
@@ -378,7 +394,7 @@ class Player {
     if (this.closed) return;
     this.closed = true;
     this.save();
-    clearInterval(this.countdown); clearTimeout(this.idleTimer);
+    clearInterval(this.countdown); clearTimeout(this.idleTimer); clearTimeout(this.busyTimer);
     document.removeEventListener('keydown', this.keys, true);
     this.offFs?.();
     this.detachSubs();

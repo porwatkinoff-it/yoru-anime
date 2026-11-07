@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('yoru', {
   onDownloadProgress: on('downloadProgress'),
   hasBattery: () => ipcRenderer.invoke('hasBattery'),
   serverSpeed: url => ipcRenderer.invoke('serverSpeed', url),
+  // При закрытии окна — синхронно, иначе сообщение теряется вместе со страницей.
+  saveData: (json, sync) => sync ? ipcRenderer.sendSync('saveData', json) : ipcRenderer.send('saveData', json),
   dl: {
     list: () => ipcRenderer.invoke('dlList'),
     enqueue: meta => ipcRenderer.invoke('dlEnqueue', meta),

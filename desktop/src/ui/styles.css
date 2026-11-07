@@ -230,6 +230,10 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .pill.show { display: inline-flex; }
 .pill:hover { background: #fff; }
 .p-center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+/* Загрузка видео. Пока скрыт — display: none, чтобы анимация не крутилась впустую. */
+.p-loading { position: absolute; inset: 0; display: none; place-items: center; pointer-events: none; }
+#player.loading .p-loading { display: grid; animation: fade .2s; }
+.p-loading .spinner { width: 56px; height: 56px; border-width: 4px; border-color: rgba(255,255,255,.18); border-top-color: var(--accent); background: rgba(0,0,0,.35); }
 .p-flash { position: absolute; left: 50%; top: 40px; transform: translateX(-50%); background: rgba(10,16,28,.85); padding: 9px 16px; border-radius: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .p-flash.show { opacity: 1; }
 .p-error { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; background: rgba(0,0,0,.6); pointer-events: auto; }

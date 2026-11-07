@@ -7,9 +7,23 @@ import * as Sv from './servers.js';
 // ---------- Хранилище (localStorage окна приложения) ----------
 export const S = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
-  del(k) { try { localStorage.removeItem(k); } catch {} }
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} dirty(); },
+  del(k) { try { localStorage.removeItem(k); } catch {} dirty(); }
 };
+// Копия хранилища в файле приложения (yoru-data.json рядом с токеном): по ней версия 2.1.0
+// перенесёт прогресс, избранное и настройки. Пишем не чаще раза в 30 с, при запуске и закрытии окна.
+let saveTimer = 0;
+export function exportData(sync) {
+  clearTimeout(saveTimer); saveTimer = 0;
+  try {
+    const data = {};
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); data[k] = localStorage.getItem(k); }
+    window.yoru?.saveData?.(JSON.stringify({ format: 1, saved: Date.now(), data }), sync === true);
+  } catch {}
+}
+function dirty() { if (!saveTimer) saveTimer = setTimeout(exportData, 30000); }
+setTimeout(exportData, 5000);
+addEventListener('beforeunload', () => exportData(true));
 export const now = () => Date.now();
 
 export async function api(path, params = {}, auth = false) {

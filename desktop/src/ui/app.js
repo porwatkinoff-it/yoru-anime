@@ -446,13 +446,13 @@ async function checkUpdate(manual) {
   update = r.data.available ? r.data : null;
   const chip = $('#update-chip');
   chip.hidden = !update;
-  if (update) chip.textContent = `Обновить до ${update.version}`;
-  if (text) text.textContent = update ? `Доступна версия ${update.version}.` : 'Установлена последняя версия.';
+  if (update) chip.textContent = update.toArm ? 'Версия для Apple Silicon' : `Обновить до ${update.version}`;
+  if (text) text.textContent = update ? (update.toArm ? 'Установлена версия для Intel — доступна родная версия для Apple Silicon.' : `Доступна версия ${update.version}.`) : 'Установлена последняя версия.';
   if (manual) update ? showUpdate() : toast('Установлена последняя версия');
 }
 function showUpdate() {
   if (!update) return;
-  const m = modal(`<h3>Yoru Anime ${esc(update.version)}</h3><p class="hint">Сейчас установлена ${esc(update.current)}.</p>
+  const m = modal(`<h3>Yoru Anime ${esc(update.version)}</h3><p class="hint">${update.toArm ? 'Сейчас установлена версия для Intel. Родная версия для Apple Silicon работает быстрее, тратит меньше энергии и будет открываться в следующих macOS.' : `Сейчас установлена ${esc(update.current)}.`}</p>
     <div class="summary" style="margin:0 0 18px;max-height:240px;overflow:auto">${esc(update.notes.replace(/[#*`]/g, '').trim() || 'Исправления и улучшения.')}</div>
     <p class="error" hidden></p><div class="actions">${update.auto ? `<button class="btn primary" id="install">Скачать и перезапустить</button>` : `<button class="btn primary" id="page">Открыть страницу загрузки</button>`}<button class="btn" id="later">Позже</button></div>`);
   $('#later', m.el).onclick = m.close;
@@ -460,6 +460,7 @@ function showUpdate() {
   $('#install', m.el)?.addEventListener('click', async e => {
     const b = e.target.closest('button'); b.disabled = true; b.textContent = 'Скачивается…';
     window.yoru.onUpdateProgress((d, t) => { b.textContent = t ? `Скачивается… ${Math.round(d / t * 100)}%` : 'Скачивается…'; });
+    D.exportData();
     const r = await window.yoru.installUpdate(update.asset.url, update.asset.name);
     if (r.error) { const err = $('.error', m.el); err.textContent = 'Не удалось обновиться: ' + r.error; err.hidden = false; b.disabled = false; b.textContent = 'Повторить'; }
     else b.textContent = 'Перезапуск…';

@@ -87,6 +87,16 @@ ipcMain.handle('serverSpeed', async (_e, url) => {
   } catch { return { error: ctrl.signal.aborted ? 'слишком медленно' : 'недоступен' }; }
   finally { clearTimeout(timer); }
 });
+// Прогресс и настройки из окна — в файл, чтобы их забрала версия 2.1.0 (у неё другое хранилище страницы).
+ipcMain.on('saveData', (e, json) => {
+  e.returnValue = true;
+  if (typeof json !== 'string' || json.length > 20e6) return;
+  try {
+    const f = path.join(app.getPath('userData'), 'yoru-data.json');
+    fs.writeFileSync(f + '.tmp', json, { mode: 0o600 });
+    fs.renameSync(f + '.tmp', f);
+  } catch {}
+});
 ipcMain.handle('openExternal', (_e, url) => { if (/^https:\/\//.test(url)) shell.openExternal(url); });
 ipcMain.handle('version', () => app.getVersion());
 ipcMain.handle('fullscreen', (_e, on) => { if (win) win.setFullScreen(on ?? !win.isFullScreen()); return win?.isFullScreen(); });
@@ -106,8 +116,10 @@ const offline = require('./downloads')({ api, UA, wrap, send: (ch, ...a) => win?
 // ---------- Обновления из GitHub Releases ----------
 const numeric = v => String(v).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
 const newer = (a, b) => { const x = numeric(a), y = numeric(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+// Intel-сборка, запущенная через Rosetta, видит process.arch === 'x64' и без этого вечно обновлялась бы до Intel-сборки.
+const onArm = process.arch === 'arm64' || app.runningUnderARM64Translation;
 function assetFor(assets) {
-  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const arch = onArm ? 'arm64' : 'x64';
   const find = re => assets.find(a => re.test(a.name));
   if (process.platform === 'darwin') return find(new RegExp(`-mac-${arch}\\.zip$`));
   if (process.platform === 'win32') return find(new RegExp(`-win-${arch}-setup\\.exe$`)) || find(/-win-.*setup\.exe$/);
@@ -120,7 +132,9 @@ ipcMain.handle('checkUpdate', wrap(async () => {
   const r = await res.json();
   const version = String(r.tag_name || '').replace(/^v/, '');
   const asset = assetFor(r.assets || []);
-  return { version, current: app.getVersion(), available: newer(version, app.getVersion()), notes: r.body || '', page: r.html_url, asset: asset ? { name: asset.name, url: asset.browser_download_url, size: asset.size } : null, auto: !!asset && app.isPackaged };
+  // На Mac с Apple Silicon Intel-сборку меняем на родную даже без новой версии: macOS 28 перестанет её открывать.
+  const native = process.platform === 'darwin' && app.runningUnderARM64Translation && !!asset;
+  return { version, current: app.getVersion(), available: newer(version, app.getVersion()) || native, toArm: native && !newer(version, app.getVersion()), notes: r.body || '', page: r.html_url, asset: asset ? { name: asset.name, url: asset.browser_download_url, size: asset.size } : null, auto: !!asset && app.isPackaged };
 }));
 async function fetchFile(url, file, onProgress) {
   const res = await net.fetch(url, { headers: { 'User-Agent': UA } });
