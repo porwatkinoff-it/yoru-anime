@@ -1,0 +1,96 @@
+# Сборка Yoru Anime для компьютеров на Rust (Tauri): Windows, Linux и Mac Intel.
+# Mac Apple Silicon собирается локально. Файлы называются так же, как у Electron-версии 2.0.x,
+# чтобы её автообновление находило новую версию.
+name: Desktop (Tauri)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: win-x64
+            bundles: nsis
+          - os: ubuntu-22.04
+            name: linux-x86_64
+            bundles: appimage,deb
+          - os: ubuntu-22.04-arm
+            name: linux-arm64
+            bundles: appimage
+          - os: macos-latest
+            name: mac-x64
+            bundles: app,dmg
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop-tauri/src-tauri -> target
+          key: ${{ matrix.name }}
+
+      - name: Linux: зависимости WebKitGTK
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf file
+
+      - name: Рендерер субтитров (JASSUB)
+        working-directory: desktop
+        run: |
+          npm ci --ignore-scripts
+          node build.mjs
+
+      - name: Tauri CLI
+        working-directory: desktop-tauri
+        run: npm ci
+
+      - name: Сборка
+        working-directory: desktop-tauri
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            npx tauri build --bundles ${{ matrix.bundles }} --target ${{ matrix.target }}
+          else
+            npx tauri build --bundles ${{ matrix.bundles }}
+          fi
+
+      - name: Файлы релиза
+        shell: bash
+        run: |
+          V=$(node -p "require('./desktop-tauri/src-tauri/tauri.conf.json').version")
+          B=desktop-tauri/src-tauri/target/${{ matrix.target }}/release/bundle
+          mkdir -p out
+          case "${{ matrix.name }}" in
+            win-x64)      cp "$B"/nsis/*-setup.exe "out/Yoru-Anime-$V-win-x64-setup.exe" ;;
+            linux-x86_64) cp "$B"/appimage/*.AppImage "out/Yoru-Anime-$V-linux-x86_64.AppImage"
+                          cp "$B"/deb/*.deb "out/Yoru-Anime-$V-linux-amd64.deb" ;;
+            linux-arm64)  cp "$B"/appimage/*.AppImage "out/Yoru-Anime-$V-linux-arm64.AppImage" ;;
+            mac-x64)      ditto -c -k --keepParent "$B/macos/Yoru Anime.app" "out/Yoru-Anime-$V-mac-x64.zip"
+                          cp "$B"/dmg/*.dmg "out/Yoru-Anime-$V-mac-x64.dmg" ;;
+          esac
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error

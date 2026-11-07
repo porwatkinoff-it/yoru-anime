@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Yoru Anime",
+  "mainBinaryName": "Yoru Anime",
+  "version": "2.1.0",
+  "identifier": "com.resvvt.yoruanime",
+  "build": {
+    "frontendDist": "../dist-ui",
+    "beforeBuildCommand": "node prepare-ui.mjs",
+    "beforeDevCommand": "node prepare-ui.mjs"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "appimage",
+      "deb"
+    ],
+    "category": "Entertainment",
+    "shortDescription": "Аниме с Anime 365",
+    "copyright": "© 2026 resvvt",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  }
+}

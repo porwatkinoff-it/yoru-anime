@@ -120,7 +120,7 @@ export function play(d) {
   // Следующая — следующая по номеру скачанная серия этого аниме.
   const next = items.filter(x => x.seriesId === d.seriesId && x.state === 'done' && x.episodeNumber > d.episodeNumber).sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
   openPlayer({
-    options: [{ id: 'local', url: 'yoru://dl/' + encodeURIComponent(d.video), height: d.height, alternatives: [] }],
+    options: [{ id: 'local', url: window.yoru.dlUrl ? window.yoru.dlUrl(d.video) : 'yoru://dl/' + encodeURIComponent(d.video), height: d.height, alternatives: [] }],
     downloads: [], offline: true,
     subtitles: d.subtitles || null,
     loadSubs: async () => { const r = await window.yoru.dl.text(d.id); if (r.error) throw new Error(r.error); return d.subtitles.endsWith('.ass') ? r.data : toAss(r.data); },

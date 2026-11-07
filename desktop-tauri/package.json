@@ -1,0 +1,14 @@
+{
+  "name": "yoru-anime-tauri",
+  "private": true,
+  "version": "2.1.0",
+  "description": "Yoru Anime для компьютера на Tauri (Rust + системный WebView)",
+  "scripts": {
+    "prepare-ui": "node prepare-ui.mjs",
+    "dev": "node prepare-ui.mjs && tauri dev",
+    "build": "node prepare-ui.mjs && tauri build --bundles app"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}
