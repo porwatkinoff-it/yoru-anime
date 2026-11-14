@@ -93,15 +93,20 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); setTab('search'); setTimeout(() => $('.search-box input')?.focus(), 0); }
 });
 
-// Стрелки переводят фокус на ближайшую кнопку в эту сторону, Enter её нажимает (это делает сам браузер).
+// Стрелки переводят фокус на ближайшую кнопку в эту сторону, Enter её нажимает.
 // Так приложением можно пользоваться с пульта телевизора и без мыши.
+// Подсветку рисуем своим классом .kf: WebKitGTK в Tauri иногда считает окно неактивным и не применяет :focus.
+let kf = null;
+function markFocus(el) { kf?.classList.remove('kf'); kf = el; el?.classList.add('kf'); }
+document.addEventListener('focusin', e => { if (document.body.classList.contains('keys')) markFocus(e.target); });
 const DIRS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
 const focusable = 'button:not([disabled]), a[href], input, select, [tabindex]:not([tabindex="-1"])';
 function moveFocus([dx, dy]) {
   const scope = $('.modal-back') || document;
   const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
   const all = [...scope.querySelectorAll(focusable)].filter(visible);
-  const cur = scope.contains(document.activeElement) && document.activeElement !== document.body ? document.activeElement : null;
+  const ae = document.activeElement && document.activeElement !== document.body ? document.activeElement : kf?.isConnected ? kf : null;
+  const cur = ae && scope.contains(ae) && visible(ae) ? ae : null;
   if (!cur) {
     // Фокус пропал (сменилась страница): вернуться на карточку, которую открывали, иначе — первая кнопка на экране.
     const inView = el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; };
@@ -128,6 +133,9 @@ function moveFocus([dx, dy]) {
   return best;
 }
 document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !$('#player') && kf?.isConnected && document.body.classList.contains('keys') && !kf.matches('input, select, textarea')) {
+    e.preventDefault(); kf.click(); return;
+  }
   const d = DIRS[e.key];
   if (!d || $('#player') || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
   if (e.target.matches('input, select, textarea') && d[0]) return;  // в поле ввода влево-вправо двигают курсор
@@ -136,9 +144,10 @@ document.addEventListener('keydown', e => {
   if (!el) return;
   e.preventDefault();
   el.focus({ preventScroll: true });
+  markFocus(el);
   el.scrollIntoView({ block: el.closest('#nav') ? 'nearest' : 'center', inline: 'nearest', behavior: 'smooth' });
 });
-document.addEventListener('mousedown', () => document.body.classList.remove('keys'));
+document.addEventListener('mousedown', () => { document.body.classList.remove('keys'); markFocus(null); });
 let lastOpen = null;
 document.addEventListener('focusin', e => { if (e.target.dataset?.open && main.contains(e.target)) lastOpen = e.target.dataset.open; });
 
