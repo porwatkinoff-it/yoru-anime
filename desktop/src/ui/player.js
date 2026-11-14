@@ -272,6 +272,8 @@ class Player {
         ArrowDown: () => { v.volume = Math.max(0, v.volume - .1); this.flash(`Громкость ${Math.round(v.volume * 100)}%`); },
         f: () => this.fullscreen(), m: () => { v.muted = !v.muted; }, s: () => this.seek(SKIP, true),
         n: () => this.nextTitle && this.close(true),
+        // OK на пульте: пауза, если фокус не на кнопке плеера (иначе Enter нажал бы карточку под плеером).
+        Enter: () => { const f = document.activeElement; if (f && el.contains(f) && f !== el) f.click(); else this.toggle(); },
         Escape: () => { if (this.menu) this.closeMenu(); else if (this.fs) this.fullscreen(false); else this.close(false); }
       }[k];
       if (handled) { e.preventDefault(); e.stopPropagation(); handled(); this.poke(); }

@@ -93,6 +93,55 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); setTab('search'); setTimeout(() => $('.search-box input')?.focus(), 0); }
 });
 
+// Стрелки переводят фокус на ближайшую кнопку в эту сторону, Enter её нажимает (это делает сам браузер).
+// Так приложением можно пользоваться с пульта телевизора и без мыши.
+const DIRS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+const focusable = 'button:not([disabled]), a[href], input, select, [tabindex]:not([tabindex="-1"])';
+function moveFocus([dx, dy]) {
+  const scope = $('.modal-back') || document;
+  const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+  const all = [...scope.querySelectorAll(focusable)].filter(visible);
+  const cur = scope.contains(document.activeElement) && document.activeElement !== document.body ? document.activeElement : null;
+  if (!cur) {
+    // Фокус пропал (сменилась страница): вернуться на карточку, которую открывали, иначе — первая кнопка на экране.
+    const inView = el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; };
+    const prev = lastOpen && [...main.querySelectorAll('[data-open]')].find(el => el.dataset.open === lastOpen && visible(el));
+    const play = $('#play');
+    return prev || (play && visible(play) ? play : null) || all.find(el => main.contains(el) && inView(el)) || all.find(el => main.contains(el)) || all[0];
+  }
+  const a = cur.getBoundingClientRect(), ax = a.left + a.width / 2, ay = a.top + a.height / 2;
+  // Вверх-вниз не выходим из своей части экрана (меню слева или содержимое), пока там есть куда идти.
+  const area = el => el.closest('#sidebar, #main, .modal-back');
+  const same = dy ? all.filter(el => area(el) === area(cur)) : all;
+  let best = null, bestScore = Infinity;
+  for (const el of same) {
+    if (el === cur) continue;
+    const b = el.getBoundingClientRect();
+    // Элемент должен лежать по ту сторону от текущего; главное расстояние — вдоль направления, сдвиг вбок дороже.
+    const along = dx ? (dx > 0 ? b.left - a.right : a.left - b.right) : (dy > 0 ? b.top - a.bottom : a.top - b.bottom);
+    if (along < -4) continue;
+    const side = dx ? Math.max(0, Math.abs((b.top + b.height / 2) - ay) - (a.height + b.height) / 4)
+                    : Math.max(0, Math.abs((b.left + b.width / 2) - ax) - (a.width + b.width) / 4);
+    const score = Math.max(0, along) + side * (dx ? 4 : 2);
+    if (score < bestScore) { bestScore = score; best = el; }
+  }
+  return best;
+}
+document.addEventListener('keydown', e => {
+  const d = DIRS[e.key];
+  if (!d || $('#player') || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  if (e.target.matches('input, select, textarea') && d[0]) return;  // в поле ввода влево-вправо двигают курсор
+  document.body.classList.add('keys');
+  const el = moveFocus(d);
+  if (!el) return;
+  e.preventDefault();
+  el.focus({ preventScroll: true });
+  el.scrollIntoView({ block: el.closest('#nav') ? 'nearest' : 'center', inline: 'nearest', behavior: 'smooth' });
+});
+document.addEventListener('mousedown', () => document.body.classList.remove('keys'));
+let lastOpen = null;
+document.addEventListener('focusin', e => { if (e.target.dataset?.open && main.contains(e.target)) lastOpen = e.target.dataset.open; });
+
 // ---------- Главная ----------
 const year = new Date().getFullYear();
 const SHELVES = [
