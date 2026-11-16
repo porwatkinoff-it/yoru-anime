@@ -7,9 +7,12 @@ import * as Sv from './servers.js';
 // ---------- Хранилище (localStorage окна приложения) ----------
 export const S = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} dirty(); },
-  del(k) { try { localStorage.removeItem(k); } catch {} dirty(); }
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} dirty(k); },
+  del(k) { try { localStorage.removeItem(k); } catch {} dirty(k); }
 };
+// Подписка на изменения (аккаунт Yoru отправляет их на сервер).
+const watchers = [];
+export const onStore = f => watchers.push(f);
 // Копия хранилища в файле приложения (yoru-data.json рядом с токеном): по ней версия 2.1.0
 // перенесёт прогресс, избранное и настройки. Пишем не чаще раза в 30 с, при запуске и закрытии окна.
 let saveTimer = 0;
@@ -21,7 +24,7 @@ export function exportData(sync) {
     window.yoru?.saveData?.(JSON.stringify({ format: 1, saved: Date.now(), data }), sync === true);
   } catch {}
 }
-function dirty() { if (!saveTimer) saveTimer = setTimeout(exportData, 30000); }
+function dirty(k) { if (!saveTimer) saveTimer = setTimeout(exportData, 30000); for (const f of watchers) try { f(k); } catch {} }
 setTimeout(exportData, 5000);
 addEventListener('beforeunload', () => exportData(true));
 export const now = () => Date.now();
@@ -222,6 +225,13 @@ export const isDone = ep => S.get('done-' + ep, false) === true;
 export const markDone = ep => S.set('done-' + ep, true);
 export const fraction = ep => isDone(ep) ? 1 : +S.get('watch-' + ep, 0) || 0;
 export const rememberedTranslation = it => S.get('tr-' + it.id, '');
+// «subRu|Crunchyroll» → «Русские субтитры · Crunchyroll» — для строки «Перевод: … · Сменить».
+export function translationLabel(sig) {
+  const i = String(sig).indexOf('|'), kind = i >= 0 ? sig.slice(0, i) : sig;
+  const authors = (i >= 0 ? sig.slice(i + 1) : '').replace(/^[\s\-–]+|[\s\-–]+$/g, '');
+  const group = GROUPS[kind] || (kind.startsWith('sub') ? 'Субтитры' : kind.startsWith('voice') ? 'Озвучка' : 'Оригинал');
+  return [group, authors === 'Original' ? '' : authors].filter(Boolean).join(' · ');
+}
 export function lastEpisodeTitle(it) { const o = S.get('lp-episode'); return o && +o.id === lastEpisode(it) ? o.episodeFull : null; }
 // Серия, с которой продолжать: последняя начатая, а если она досмотрена — следующая.
 export function resumeEpisode(it, episodes) {

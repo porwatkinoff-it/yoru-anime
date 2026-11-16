@@ -334,7 +334,7 @@ class Player {
     const t = v.currentTime;
     // У самого конца позицию не храним — серия начнётся сначала.
     D.savePosition(this.pb.key, d - t < 60 ? 0 : t * 1000);
-    if (!D.isDone(this.pb.episodeId)) D.S.set('watch-' + this.pb.episodeId, Math.min(1, t / d));
+    if (!D.isDone(this.pb.episodeId)) { D.S.set('watch-' + this.pb.episodeId, Math.min(1, t / d)); D.S.set('ts-watch-' + this.pb.episodeId, D.now()); }
   }
   ended() {
     this.save(); D.markDone(this.pb.episodeId);

@@ -1,8 +1,10 @@
-// Экраны Yoru Anime: главная, поиск, «Моё», расписание, аккаунт и страница аниме.
+// Экраны Yoru: аниме (главная, поиск, «Моё», расписание, страница аниме), манга и аккаунты.
 import * as D from './data.js';
 import { openPlayer } from './player.js';
 import * as O from './offline.js';
 import * as Sv from './servers.js';
+import * as Mg from './manga.js';
+import * as Acc from './account.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const main = $('#main');
@@ -59,13 +61,24 @@ document.addEventListener('error', e => { if (e.target.tagName === 'IMG' && e.ta
 
 // ---------- Навигация ----------
 // Каждая вкладка хранит свой стек экранов; «Назад» возвращает и прокрутку.
-const stacks = { home: [{ view: 'home' }], search: [{ view: 'search' }], mine: [{ view: 'mine' }], schedule: [{ view: 'schedule' }], downloads: [{ view: 'downloads' }], account: [{ view: 'account' }] };
+const stacks = { home: [{ view: 'home' }], search: [{ view: 'search' }], mine: [{ view: 'mine' }], schedule: [{ view: 'schedule' }], downloads: [{ view: 'downloads' }], account: [{ view: 'account' }],
+  manga: [{ view: 'mangaHome' }], mangaMine: [{ view: 'mangaMine' }] };
 let tab = 'home';
+// Разделы «Аниме» и «Манга»: у каждого свои вкладки в боковой панели, раздел помнит свою последнюю вкладку.
+// Аккаунты общие и открываются из любого раздела.
+const MODE_OF = { home: 'anime', search: 'anime', mine: 'anime', schedule: 'anime', downloads: 'anime', manga: 'manga', mangaMine: 'manga' };
+const lastTab = { anime: 'home', manga: 'manga' };
+function setMode(m) {
+  $('#nav').dataset.mode = m;
+  document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+  D.S.set('mode', m);
+}
 const top = () => stacks[tab][stacks[tab].length - 1];
 function setTab(t) {
   if (t === tab) { if (stacks[t].length > 1) { stacks[t].length = 1; render(); } else main.scrollTo({ top: 0, behavior: 'smooth' }); return; }
   top().scroll = main.scrollTop;
   tab = t;
+  const md = MODE_OF[t]; if (md) { lastTab[md] = t; setMode(md); }
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === t));
   render(top().scroll || 0);
 }
@@ -76,21 +89,23 @@ function render(scroll = 0) {
   const r = top(); const id = ++renderId;
   const alive = () => id === renderId;
   main.innerHTML = '';
-  const view = { home: Home, search: Search, mine: Mine, schedule: Schedule, account: Account, detail: Detail, downloads: (r, a) => O.DownloadsView(r, a, main) }[r.view];
-  view(r, alive);
+  const view = { home: Home, search: Search, mine: Mine, schedule: Schedule, account: Account, detail: Detail, downloads: (r, a) => O.DownloadsView(r, a, main),
+    mangaHome: Mg.MangaHome, mangaMine: Mg.MangaMine, mangaTitle: Mg.MangaTitle }[r.view];
+  view(r, alive, main);
   requestAnimationFrame(() => { main.scrollTop = scroll; });
 }
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-tab]'); if (t) return setTab(t.dataset.tab);
+  const md = e.target.closest('[data-mode]'); if (md) return setTab(lastTab[md.dataset.mode]);
   const o = e.target.closest('[data-open]');
   if (o) { const it = known.get(+o.dataset.open); if (it) push({ view: 'detail', item: it, resume: !!o.dataset.resume }); return; }
   if (e.target.closest('[data-back]')) back();
 });
 document.addEventListener('mouseup', e => { if (e.button === 3) back(); });
 document.addEventListener('keydown', e => {
-  if ($('#player') || e.target.matches('input')) return;
+  if ($('#player, #reader') || e.target.matches('input')) return;
   if ((e.key === 'Escape' || e.key === 'Backspace' || (e.altKey && e.key === 'ArrowLeft') || (e.metaKey && e.key === '[')) && !$('.modal-back')) back();
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); setTab('search'); setTimeout(() => $('.search-box input')?.focus(), 0); }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); setTab($('#nav').dataset.mode === 'manga' ? 'manga' : 'search'); if (stacks[tab].length > 1) { stacks[tab].length = 1; render(); } setTimeout(() => $('.search-box input')?.focus(), 0); }
 });
 
 // Стрелки переводят фокус на ближайшую кнопку в эту сторону, Enter её нажимает.
@@ -133,11 +148,11 @@ function moveFocus([dx, dy]) {
   return best;
 }
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !$('#player') && kf?.isConnected && document.body.classList.contains('keys') && !kf.matches('input, select, textarea')) {
+  if (e.key === 'Enter' && !$('#player, #reader') && kf?.isConnected && document.body.classList.contains('keys') && !kf.matches('input, select, textarea')) {
     e.preventDefault(); kf.click(); return;
   }
   const d = DIRS[e.key];
-  if (!d || $('#player') || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  if (!d || $('#player, #reader') || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
   if (e.target.matches('input, select, textarea') && d[0]) return;  // в поле ввода влево-вправо двигают курсор
   document.body.classList.add('keys');
   const el = moveFocus(d);
@@ -302,7 +317,7 @@ async function refreshAccount() {
   paintAccount();
 }
 function paintAccount() {
-  $('#account-button .who').textContent = account ? account.name : 'Войти';
+  $('#account-button .who').textContent = account ? account.name : 'Аккаунты';
   $('#account-button .avatar').textContent = account ? account.name.trim().charAt(0).toUpperCase() : '';
 }
 function Account(_r, alive) {
@@ -311,7 +326,8 @@ function Account(_r, alive) {
     const signed = await window.yoru.signedIn();
     const version = await window.yoru.version();
     if (!alive()) return;
-    page.innerHTML = `<div class="page-head"><h1>Аккаунт</h1></div>` + (signed ? `<div class="panel"><h2>${esc(account?.name || 'Аккаунт')}</h2>
+    page.innerHTML = `<div class="page-head"><h1>Аккаунты</h1></div><div id="yoru-acc"></div>` + (signed ? `<div class="panel"><h2>Anime 365</h2>
+      <div class="kv"><span>Аккаунт</span><b>${esc(account?.name || 'Вход выполнен')}</b></div>
       <div class="kv"><span>Подписка</span><b>${account?.premium ? 'Активна' + (account.until ? ' до ' + account.until.toLocaleDateString('ru') : '') : account?.premium === false ? 'Нет' : '…'}</b></div>
       <div class="actions" style="margin-top:16px"><button class="btn" id="site">${icon.globe}Anime 365</button><button class="btn" id="logout">Выйти</button></div></div>
       <div class="panel" id="servers"></div>`
@@ -319,9 +335,9 @@ function Account(_r, alive) {
       <label class="field"><span>Почта</span><input name="email" type="email" autocomplete="username" required></label>
       <label class="field"><span>Пароль</span><input name="password" type="password" autocomplete="current-password" required></label>
       <p class="error" hidden></p><button class="btn primary" type="submit">Войти</button></form>`) +
-      `<div class="panel"><h2>Yoru Anime ${esc(version)}</h2><p id="upd-text">Обновления проверяются автоматически.</p><div class="actions"><button class="btn" id="check">Проверить обновления</button></div></div>`;
+      `<div id="manga-acc"></div><div class="panel"><h2>Yoru ${esc(version)}</h2><p id="upd-text">Обновления проверяются автоматически.</p><div class="actions"><button class="btn" id="check">Проверить обновления</button></div></div>`;
     $('#site', page)?.addEventListener('click', () => window.yoru.openExternal('https://smotret-anime.app/'));
-    $('#logout', page)?.addEventListener('click', async () => { await window.yoru.logout(); account = null; paintAccount(); draw(); });
+    $('#logout', page)?.addEventListener('click', async () => { if (!await Acc.askLogout('anime365', 'Anime 365')) return; await window.yoru.logout(); account = null; paintAccount(); draw(); });
     $('#login', page)?.addEventListener('submit', async e => {
       e.preventDefault();
       const f = e.target, err = $('.error', f), btn = $('button', f);
@@ -333,6 +349,8 @@ function Account(_r, alive) {
     $('#check', page).addEventListener('click', () => checkUpdate(true));
     const sv = $('#servers', page);
     if (sv) ServersPanel(sv, alive);
+    Mg.AccountPanels($('#manga-acc', page), alive);
+    Acc.Panel($('#yoru-acc', page));
   };
   draw();
 }
@@ -385,6 +403,7 @@ function Detail(r, alive) {
     const started = D.lastEpisode(it) !== 0;
     const regCount = eps.filter(e => reg.has(e.id)).length;
     const current = D.lastEpisode(it);
+    const trSig = D.rememberedTranslation(it);
     const epHTML = e => {
       const f = D.fraction(e.id);
       const date = e.uploaded ? e.uploaded.toLocaleDateString('ru', { day: 'numeric', month: 'short', year: e.uploaded.getFullYear() !== year ? 'numeric' : undefined }) : '';
@@ -397,7 +416,8 @@ function Detail(r, alive) {
       <div class="meta">${full.score ? `<span class="score-text" style="color:var(--score-${D.scoreClass(full.score)})">★ ${D.scoreText(full.score)}</span>` : ''}${full.kind ? `<span>${esc(full.kind)}</span>` : ''}${full.season ? `<span>${esc(full.season)}</span>` : full.year ? `<span>${full.year}</span>` : ''}${regCount ? `<span>${regCount} ${plural(regCount, 'серия', 'серии', 'серий')}</span>` : ''}</div>
       <div class="genres">${full.genres.map(g => `<span>${esc(g.title)}</span>`).join('')}</div>
       <div class="actions">${data ? (resume ? `<button class="btn primary" id="play">${icon.play}${started ? 'Продолжить · ' + esc(resume.title) : 'Смотреть · ' + esc(resume.title)}</button>` : '') : `<button class="btn primary" disabled>${icon.play}Загрузка…</button>`}
-      <button class="btn icon ${fav ? 'on' : ''}" id="fav" title="${fav ? 'Убрать из избранного' : 'В избранное'}">${icon.heart}</button></div></div></div></div>
+      <button class="btn icon ${fav ? 'on' : ''}" id="fav" title="${fav ? 'Убрать из избранного' : 'В избранное'}">${icon.heart}</button></div>
+      ${trSig && data && (resume || eps[0]) ? `<div class="tr-line" title="Серии включаются с этим переводом. Правый щелчок по серии — выбрать другой.">Перевод: <b>${esc(D.translationLabel(trSig))}</b><button class="link" id="tr-change">Сменить</button></div>` : ''}</div></div></div>
       ${full.summary ? `<div class="summary clamp">${esc(full.summary)}</div><button class="more" hidden>Ещё</button>` : ''}
       ${seasonList?.length ? `<div class="section-title">Сезоны</div><div class="seasons">${seasonList.map(s => (keep(s.item), `<button class="chip ${s.current ? 'on' : ''}" ${s.current ? '' : `data-season="${s.id}"`}>${esc(s.label)}</button>`)).join('')}</div>` : ''}
       <div id="eps">${data ? (eps.length ? `<div class="section-title">Серии <small>${regCount}</small></div><div class="episodes">${eps.map((e, i) => (i === firstExtra && i > 0 ? '<div class="ep-sep">Трейлеры и спецвыпуски</div>' : '') + epHTML(e)).join('')}</div>` : `<div class="state">Серий пока нет</div>`) : r.error ? errorState(r.error) : loadingState()}</div>`;
@@ -407,6 +427,7 @@ function Detail(r, alive) {
     if (sum && sum.scrollHeight > sum.clientHeight + 2) { const m = $('.more', page); m.hidden = false; m.onclick = () => { sum.classList.remove('clamp'); m.remove(); }; }
     $('#fav', page).onclick = () => { D.toggleFavorite(it); if (data) D.seen(it, data.episodes.length); draw(); toast(D.isFavorite(it) ? 'Добавлено в избранное' : 'Убрано из избранного'); };
     $('#play', page)?.addEventListener('click', () => play(resume, true));
+    $('#tr-change', page)?.addEventListener('click', () => play(resume || eps[0], false));
     $('[data-retry]', page)?.addEventListener('click', () => { r.error = null; draw(); load(); });
   };
   page.addEventListener('click', e => {
@@ -415,7 +436,12 @@ function Detail(r, alive) {
     const dl = e.target.closest('[data-dl]');
     if (dl && data) { O.episodeClick(it, data.episodes.find(x => x.id === +dl.dataset.dl)); return; }
     const b = e.target.closest('[data-ep]');
-    if (b && data) play(data.episodes.find(x => x.id === +b.dataset.ep), false);
+    if (b && data) play(data.episodes.find(x => x.id === +b.dataset.ep), true);
+  });
+  // Щелчок по серии включает запомненный перевод; правый щелчок — сначала показывает выбор.
+  page.addEventListener('contextmenu', e => {
+    const b = e.target.closest('[data-ep]'); if (!b || !data) return;
+    e.preventDefault(); play(data.episodes.find(x => x.id === +b.dataset.ep), false);
   });
   const play = (ep, quick) => startEpisode(it, data, ep, quick, () => { if (alive()) draw(); });
   const load = async () => {
@@ -432,7 +458,7 @@ function Detail(r, alive) {
   if (!seasonList) D.seasons(it).then(s => { seasonList = r.seasons = s; if (alive() && s.length) { const y = main.scrollTop; draw(); main.scrollTop = y; } });
 }
 
-// Выбор перевода и запуск серии. «Смотреть» сразу берёт запомненный перевод; клик по серии — показывает выбор.
+// Выбор перевода и запуск серии. «Смотреть» и щелчок по серии сразу берут запомненный перевод; «Сменить» — показывает выбор.
 export async function startEpisode(it, data, ep, quick, onClose) {
   if (!(await window.yoru.signedIn())) { toast('Войдите в аккаунт Anime 365, чтобы смотреть'); setTab('account'); return; }
   let list;
@@ -510,7 +536,7 @@ async function checkUpdate(manual) {
 }
 function showUpdate() {
   if (!update) return;
-  const m = modal(`<h3>Yoru Anime ${esc(update.version)}</h3><p class="hint">${update.toArm ? 'Сейчас установлена версия для Intel. Родная версия для Apple Silicon работает быстрее, тратит меньше энергии и будет открываться в следующих macOS.' : `Сейчас установлена ${esc(update.current)}.`}</p>
+  const m = modal(`<h3>Yoru ${esc(update.version)}</h3><p class="hint">${update.toArm ? 'Сейчас установлена версия для Intel. Родная версия для Apple Silicon работает быстрее, тратит меньше энергии и будет открываться в следующих macOS.' : `Сейчас установлена ${esc(update.current)}.`}</p>
     <div class="summary" style="margin:0 0 18px;max-height:240px;overflow:auto">${esc(update.notes.replace(/[#*`]/g, '').trim() || 'Исправления и улучшения.')}</div>
     <p class="error" hidden></p><div class="actions">${update.auto ? `<button class="btn primary" id="install">Скачать и перезапустить</button>` : `<button class="btn primary" id="page">Открыть страницу загрузки</button>`}<button class="btn" id="later">Позже</button></div>`);
   $('#later', m.el).onclick = m.close;
@@ -539,9 +565,22 @@ window.yoru.onDownloadProgress(p => {
 
 // ---------- Запуск ----------
 document.documentElement.classList.add('platform-' + window.yoru.platform);
+if (!Mg.available()) $('#modes').hidden = true;
+else { Mg.init(); if (D.S.get('mode') === 'manga') tab = 'manga'; }
+document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+$('#nav').dataset.mode = MODE_OF[tab];
+document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === MODE_OF[tab]));
 render();
 O.init();
 refreshAccount();
+// Аккаунт Yoru: после синхронизации перерисовываем экран, если на нём ничего не вводят и не смотрят.
+const quiet = () => !$('#player, #reader, .modal-back') && !document.activeElement?.matches('input, textarea');
+const LIVE = new Set(['home', 'mine', 'mangaHome', 'mangaMine', 'account', 'detail', 'mangaTitle']);
+Acc.init({
+  rerender: () => { if (quiet() && LIVE.has(top().view)) render(main.scrollTop); },
+  anime365: async () => { await refreshAccount(); if (quiet() && top().view === 'account') render(main.scrollTop); },
+  signedOut: () => { if (quiet() && top().view === 'account') render(main.scrollTop); }
+});
 checkUpdate(false);
 setInterval(() => checkUpdate(false), 6 * 3600e3);
 setTimeout(async () => {
