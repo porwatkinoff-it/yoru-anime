@@ -38,6 +38,7 @@ export async function init() {
   paint();
 }
 function paint() {
+  trackSpeed();
   const busy = items.filter(d => d.state === 'queued' || d.state === 'running').length;
   const c = $('#nav-downloads .count');
   if (c.hidden !== !busy) c.hidden = !busy;
@@ -131,6 +132,22 @@ export function play(d) {
   });
 }
 
+// Скорость скачивания: по приросту байтов за последние несколько секунд (сглаживаем).
+const rates = new Map();   // id → { bytes, at, speed }
+function trackSpeed() {
+  const now = Date.now();
+  for (const d of items) {
+    if (d.state !== 'running') { rates.delete(d.id); continue; }
+    const r = rates.get(d.id);
+    if (!r) { rates.set(d.id, { bytes: d.bytes, at: now, speed: 0 }); continue; }
+    const dt = (now - r.at) / 1000;
+    if (dt < 0.8) continue;
+    const v = Math.max(0, (d.bytes - r.bytes) / dt);
+    r.speed = r.speed ? r.speed * .6 + v * .4 : v; r.bytes = d.bytes; r.at = now;
+  }
+}
+const speedText = d => { const v = rates.get(d.id)?.speed || 0; return v > 0 ? ' · ' + (v >= 1e6 ? (v / 1e6).toFixed(1).replace('.', ',') + ' МБ/с' : Math.round(v / 1e3) + ' КБ/с') : ''; };
+
 // ---------- Вкладка «Загрузки» ----------
 export function DownloadsView(_r, alive, main) {
   const page = document.createElement('div'); page.className = 'page'; main.append(page);
@@ -138,13 +155,13 @@ export function DownloadsView(_r, alive, main) {
   const refreshSpace = () => window.yoru.dl.space().then(s => { space = s; if (alive()) draw(); });
   const state = d => d.state === 'done' ? `${d.height ? d.height + 'p · ' : ''}${size(d.total || d.bytes)}`
     : d.state === 'failed' ? `<span class="bad">${esc(d.error)}</span>`
-    : d.state === 'running' ? (d.total ? `${Math.floor(d.bytes / d.total * 100)}% · ${size(d.bytes)} из ${size(d.total)}` : 'Подготовка…')
+    : d.state === 'running' ? (d.total ? `${Math.floor(d.bytes / d.total * 100)}% · ${size(d.bytes)} из ${size(d.total)}${speedText(d)}` : 'Подготовка…')
     : 'В очереди';
   const row = d => `<div class="dl-row ${d.state}"><button class="dl-main" data-act="${d.state === 'done' ? 'play' : d.state === 'failed' ? 'retry' : ''}" data-id="${d.id}">
       <span class="dl-ico">${d.state === 'done' ? ico.play : d.state === 'failed' ? ico.retry : ico.wait}</span>
       <span style="min-width:0"><b>${esc(d.episodeTitle)}</b><small>${esc(d.translationTitle)} · ${state(d)}</small></span>
       ${d.state === 'running' && d.total ? `<i class="dl-bar" style="width:${d.bytes / d.total * 100}%"></i>` : ''}</button>
-    <button class="btn icon" data-act="remove" data-id="${d.id}" title="Удалить">${ico.trash}</button></div>`;
+    <button class="btn icon danger" data-act="remove" data-id="${d.id}" title="Удалить">${ico.trash}</button></div>`;
   // Набор строк и их состояния; пока он прежний, обновляем только проценты.
   let shape = '';
   const shapeOf = () => items.map(d => `${d.id}:${d.state}:${d.total ? 1 : 0}`).join(',');
@@ -158,7 +175,7 @@ export function DownloadsView(_r, alive, main) {
         list.sort((a, b) => a.episodeNumber - b.episodeNumber || a.created - b.created);
         const done = list.filter(d => d.state === 'done').length;
         return `<section class="dl-series"><div class="dl-head"><img src="${esc(it.posterSmall)}" alt=""><div style="min-width:0"><h2>${esc(it.title)}</h2><span>Скачано: ${done} ${plural(done, 'серия', 'серии', 'серий')}${done < list.length ? ` · ещё ${list.length - done} не готово` : ''}</span></div>
-          <button class="btn" data-act="remove-series" data-id="${it.id}">Удалить все</button></div>${list.map(row).join('')}</section>`;
+          <button class="btn danger" data-act="remove-series" data-id="${it.id}">Удалить все</button></div>${list.map(row).join('')}</section>`;
       }).join('') : `<div class="state"><div><b>Здесь пока пусто</b>Нажмите ${ico.dl.replace('<svg', '<svg class="inline"')} на серии, чтобы смотреть её без интернета.</div></div>`}
       <div class="panel"><h2>Настройки загрузок</h2>
         <div class="kv"><span>Качество</span><div class="seg">${QUALITIES.map(([q, l]) => `<button data-q="${q}" class="${quality() === q ? 'on' : ''}">${l}</button>`).join('')}</div></div>

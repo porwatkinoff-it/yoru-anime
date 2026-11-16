@@ -1,8 +1,11 @@
-// Yoru Anime для компьютера на Rust (Tauri) с системным WebView. Интерфейс общий с Electron-версией (desktop/src/ui).
+// Yoru для компьютера на Rust (Tauri) с системным WebView. Интерфейс общий с Electron-версией (desktop/src/ui).
 // Сеть идёт отсюда: у сайта нет CORS, а токен не попадает в страницу.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account;
 mod dl;
+mod manga;
+mod shiki;
 #[cfg(not(target_os = "macos"))]
 mod migrate;
 mod update;
@@ -117,6 +120,7 @@ async fn login(y: State<'_, Yoru>, email: String, password: String) -> Result<bo
         .ok_or("Не удалось выполнить вход")?.to_string();
     y.save_token(&t);
     *y.token.lock().unwrap() = t;
+    account::vault_changed("anime365");
     Ok(true)
 }
 
@@ -268,12 +272,12 @@ pub fn quit_soon(app: AppHandle) {
 #[cfg(target_os = "macos")]
 fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem as P, Submenu};
-    let quit = MenuItem::with_id(app, "quit", "Завершить Yoru Anime", true, Some("CmdOrCtrl+Q"))?;
-    let about = AboutMetadata { name: Some("Yoru Anime".into()), version: Some(app.package_info().version.to_string()), ..Default::default() };
+    let quit = MenuItem::with_id(app, "quit", "Завершить Yoru", true, Some("CmdOrCtrl+Q"))?;
+    let about = AboutMetadata { name: Some("Yoru".into()), version: Some(app.package_info().version.to_string()), ..Default::default() };
     Menu::with_items(app, &[
-        &Submenu::with_items(app, "Yoru Anime", true, &[
-            &P::about(app, Some("О Yoru Anime"), Some(about))?, &P::separator(app)?,
-            &P::hide(app, Some("Скрыть Yoru Anime"))?, &P::hide_others(app, Some("Скрыть остальные"))?, &P::show_all(app, Some("Показать все"))?,
+        &Submenu::with_items(app, "Yoru", true, &[
+            &P::about(app, Some("О Yoru"), Some(about))?, &P::separator(app)?,
+            &P::hide(app, Some("Скрыть Yoru"))?, &P::hide_others(app, Some("Скрыть остальные"))?, &P::show_all(app, Some("Показать все"))?,
             &P::separator(app)?, &quit,
         ])?,
         &Submenu::with_items(app, "Правка", true, &[
@@ -296,13 +300,21 @@ fn data_dir(app: &AppHandle) -> PathBuf {
 }
 
 fn main() {
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let mut builder = tauri::Builder::default();
+    // Тестовая сборка со своей папкой данных запускается рядом с обычным Yoru.
+    if option_env!("YORU_TEST_DATA_DIR").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") { let _ = w.unminimize(); let _ = w.show(); let _ = w.set_focus(); }
-        }))
+        }));
+    }
+    let app = builder
         .register_asynchronous_uri_scheme_protocol("yoru", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || responder.respond(dl::serve(&app, &req)));
+        })
+        .register_asynchronous_uri_scheme_protocol("mimg", |ctx, req, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn(async move { responder.respond(manga::serve(app, req).await) });
         })
         .setup(|app| {
             let handle = app.handle().clone();
@@ -316,11 +328,15 @@ fn main() {
             let token = read_token(&dir);
             let http = reqwest::Client::builder().user_agent(UA).connect_timeout(Duration::from_secs(20)).read_timeout(Duration::from_secs(60)).build()?;
             app.manage(dl::Dl::new(dir.join("Downloads")));
+            app.manage(manga::Manga::new(&dir));
+            app.manage(account::Account::new(&dir));
+            app.manage(shiki::Shiki::new(&dir));
+            account::init(&handle);
             let import = import_script(&dir);
             app.manage(Yoru { token: Mutex::new(token), http, dir: dir.clone() });
 
             let mut b = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("Yoru Anime")
+                .title("Yoru")
                 .inner_size(1360.0, 860.0)
                 .min_inner_size(900.0, 600.0)
                 .background_color(tauri::window::Color(10, 16, 28, 255))
@@ -334,6 +350,8 @@ fn main() {
                 });
             #[cfg(target_os = "macos")]
             { b = b.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true); }
+            // Проверочная сборка: WebView без постоянного хранилища (иначе localStorage и cookie общие с настоящим Yoru).
+            if option_env!("YORU_TEST_DATA_DIR").is_some() { b = b.incognito(true); }
             if let Some(js) = import { b = b.initialization_script(&js); }
             let win = b.build()?;
             let w = win.clone();
@@ -354,10 +372,18 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             api, login, logout, signed_in, text, server_speed, open_external, show_file, version, fullscreen, download, save_data,
             update::check_update, update::install_update,
-            dl::has_battery, dl::dl_list, dl::dl_enqueue, dl::dl_retry, dl::dl_remove, dl::dl_text, dl::dl_space
+            dl::has_battery, dl::dl_list, dl::dl_enqueue, dl::dl_retry, dl::dl_remove, dl::dl_text, dl::dl_space,
+            manga::manga_lib, manga::manga_lib_status, manga::manga_lib_login, manga::manga_lib_logout,
+            manga::comx, manga::comx_status, manga::comx_login, manga::comx_logout,
+            manga::manga_save, manga::manga_cancel, manga::manga_saved, manga::manga_delete,
+            account::account_status, account::account_set_server, account::account_register, account::account_sign_in,
+            account::account_forgot, account::account_reset, account::account_me, account::account_verify_email, account::account_resend,
+            account::account_change_email, account::account_change_password, account::account_sign_out, account::account_remove_device,
+            account::account_delete, account::account_forget, account::account_sync,
+            shiki::shiki_status, shiki::shiki_set_keys, shiki::shiki_login, shiki::shiki_logout, shiki::shiki_call
         ])
         .build(tauri::generate_context!())
-        .expect("не удалось запустить Yoru Anime");
+        .expect("не удалось запустить Yoru");
     app.run(|app, e| {
         // Cmd+Q и выход из меню тоже сначала сохраняют данные.
         if let RunEvent::ExitRequested { code: None, api, .. } = e {

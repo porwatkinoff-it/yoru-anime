@@ -11,8 +11,9 @@ import java.net.*;
 final class Sync {
  static final String TYPE="_nightanime._tcp.";
  static volatile boolean running=false;
+ static volatile boolean off=false; // отладка: development_no_tv_sync, чтобы тесты не попадали в историю телевизора
  static void run(Context context,Runnable changed){
-  if(running)return;running=true;Context c=context.getApplicationContext();Handler main=new Handler(Looper.getMainLooper());
+  if(off||running)return;running=true;Context c=context.getApplicationContext();Handler main=new Handler(Looper.getMainLooper());
   NsdManager nsd=(NsdManager)c.getSystemService(Context.NSD_SERVICE);
   NsdManager.DiscoveryListener[] holder=new NsdManager.DiscoveryListener[1];
   Runnable stop=()->{if(holder[0]!=null){try{nsd.stopServiceDiscovery(holder[0]);}catch(Exception ignored){}holder[0]=null;}running=false;};

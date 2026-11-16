@@ -1,15 +1,18 @@
 // Данные Anime 365 и прогресс просмотра: те же правила и ключи, что в Android- и iOS-версиях.
 export const BASE = 'https://smotret-anime.app';
-export const CARD_FIELDS = 'id,titles,posterUrl,posterUrlSmall,typeTitle,year,myAnimeListScore,season,genres,isHentai';
+export const CARD_FIELDS = 'id,titles,posterUrl,posterUrlSmall,typeTitle,year,myAnimeListScore,myAnimeListId,season,genres,isHentai';
 
 import * as Sv from './servers.js';
 
 // ---------- Хранилище (localStorage окна приложения) ----------
 export const S = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} dirty(); },
-  del(k) { try { localStorage.removeItem(k); } catch {} dirty(); }
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} dirty(k); },
+  del(k) { try { localStorage.removeItem(k); } catch {} dirty(k); }
 };
+// Подписка на изменения (аккаунт Yoru отправляет их на сервер).
+const watchers = [];
+export const onStore = f => watchers.push(f);
 // Копия хранилища в файле приложения (yoru-data.json рядом с токеном): по ней версия 2.1.0
 // перенесёт прогресс, избранное и настройки. Пишем не чаще раза в 30 с, при запуске и закрытии окна.
 let saveTimer = 0;
@@ -21,7 +24,7 @@ export function exportData(sync) {
     window.yoru?.saveData?.(JSON.stringify({ format: 1, saved: Date.now(), data }), sync === true);
   } catch {}
 }
-function dirty() { if (!saveTimer) saveTimer = setTimeout(exportData, 30000); }
+function dirty(k) { if (!saveTimer) saveTimer = setTimeout(exportData, 30000); for (const f of watchers) try { f(k); } catch {} }
 setTimeout(exportData, 5000);
 addEventListener('beforeunload', () => exportData(true));
 export const now = () => Date.now();
@@ -33,7 +36,7 @@ export async function api(path, params = {}, auth = false) {
 }
 
 // ---------- Модели ----------
-const cardKeys = ['id', 'titles', 'posterUrl', 'posterUrlSmall', 'typeTitle', 'year', 'myAnimeListScore', 'season', 'genres'];
+const cardKeys = ['id', 'titles', 'posterUrl', 'posterUrlSmall', 'typeTitle', 'year', 'myAnimeListScore', 'myAnimeListId', 'season', 'genres', 'numberOfEpisodes', 'isAiring'];
 export function item(v) {
   const t = v.titles || {};
   const year = +v.year || 0, kind = v.typeTitle || '';
@@ -44,7 +47,7 @@ export function item(v) {
     id: +v.id || 0, title: t.ru || t.romaji || v.title || 'Аниме', year, kind,
     subtitle: [kind, year > 0 ? String(year) : ''].filter(Boolean).join(' · '),
     poster: v.posterUrl || v.posterUrlSmall || '', posterSmall: v.posterUrlSmall || v.posterUrl || '',
-    season: v.season || '', score: +v.myAnimeListScore || 0,
+    season: v.season || '', score: +v.myAnimeListScore || 0, malId: +v.myAnimeListId || 0,
     genres: (v.genres || []).filter(g => g && g.id).map(g => ({ id: +g.id, title: g.title || '' })),
     summary: text, raw
   };
@@ -200,7 +203,7 @@ export async function playback(t, ep, it) {
   const subtitles = d.subtitlesUrl ? makeURL(d.subtitlesUrl) : null;
   if (t.kind.startsWith('sub') && !subtitles) throw new Error('Для этого перевода нет ссылки на субтитры. Выберите другой перевод.');
   remember(t, ep, it);
-  return { options, downloads, subtitles, title: it.title, episodeTitle: ep.title, key: 'position-' + t.id, episodeId: ep.id };
+  return { options, downloads, subtitles, title: it.title, poster: it.poster, episodeTitle: ep.title, key: 'position-' + t.id, episodeId: ep.id };
 }
 
 // ---------- Прогресс, избранное, история ----------
@@ -222,6 +225,13 @@ export const isDone = ep => S.get('done-' + ep, false) === true;
 export const markDone = ep => S.set('done-' + ep, true);
 export const fraction = ep => isDone(ep) ? 1 : +S.get('watch-' + ep, 0) || 0;
 export const rememberedTranslation = it => S.get('tr-' + it.id, '');
+// «subRu|Crunchyroll» → «Русские субтитры · Crunchyroll» — для строки «Перевод: … · Сменить».
+export function translationLabel(sig) {
+  const i = String(sig).indexOf('|'), kind = i >= 0 ? sig.slice(0, i) : sig;
+  const authors = (i >= 0 ? sig.slice(i + 1) : '').replace(/^[\s\-–]+|[\s\-–]+$/g, '');
+  const group = GROUPS[kind] || (kind.startsWith('sub') ? 'Субтитры' : kind.startsWith('voice') ? 'Озвучка' : 'Оригинал');
+  return [group, authors === 'Original' ? '' : authors].filter(Boolean).join(' · ');
+}
 export function lastEpisodeTitle(it) { const o = S.get('lp-episode'); return o && +o.id === lastEpisode(it) ? o.episodeFull : null; }
 // Серия, с которой продолжать: последняя начатая, а если она досмотрена — следующая.
 export function resumeEpisode(it, episodes) {

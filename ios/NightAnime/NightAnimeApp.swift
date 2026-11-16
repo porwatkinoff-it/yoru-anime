@@ -9,7 +9,7 @@ import CoreImage.CIFilterBuiltins
     @StateObject private var store = AnimeStore()
     @StateObject private var downloads = DownloadCenter.shared
     init() {
-        let tab = UITabBarAppearance(); tab.configureWithOpaqueBackground(); tab.backgroundColor = UIColor(red: 0.03, green: 0.05, blue: 0.09, alpha: 0.96)
+        let tab = UITabBarAppearance(); tab.configureWithOpaqueBackground(); tab.backgroundColor = UIColor(red: 0.012, green: 0.016, blue: 0.024, alpha: 0.97)
         UITabBar.appearance().standardAppearance = tab; UITabBar.appearance().scrollEdgeAppearance = tab
     }
     var body: some Scene { WindowGroup {
@@ -40,17 +40,17 @@ enum QA {
 // Палитра и элементы оформления Night TV — те же цвета, что в Android-версии.
 enum Night {
     static func rgb(_ hex: UInt32, _ alpha: Double = 1) -> Color { Color(red: Double(hex >> 16 & 255) / 255, green: Double(hex >> 8 & 255) / 255, blue: Double(hex & 255) / 255).opacity(alpha) }
-    static let bg = rgb(0x0a101c)
-    static let panel = rgb(0x202c3e, 0.63)
-    static let card = rgb(0x172335, 0.31)
+    static let bg = rgb(0x040508)
+    static let panel = rgb(0x1a1f29, 0.63)
+    static let card = rgb(0x121722, 0.31)
     static let accent = rgb(0xedf4ff)
     static let muted = rgb(0xa9a9bd)
     static let meta = rgb(0xaaaabd)
     static let stroke = Color.white.opacity(0.13)
     // Роли из replica/design/tokens.json.
     static let text = rgb(0xf2f5fb)
-    static let surface = rgb(0x172335)
-    static let raised = rgb(0x202c3e, 0.85)
+    static let surface = rgb(0x11151d)
+    static let raised = rgb(0x1a1f29, 0.85)
     static let onAccent = rgb(0x0f1a2a)
     static let fresh = rgb(0xffcc80)
     static let scoreHigh = rgb(0x6fdc8c)
@@ -61,8 +61,8 @@ enum Night {
 }
 struct NightBackground: View {
     var body: some View {
-        // Ровный ночной фон без фотографии: глубокий синий с лёгким переходом сверху вниз.
-        LinearGradient(colors: [Night.rgb(0x0e1626), Night.rgb(0x0a101c), Night.rgb(0x070b14)], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+        // Почти чёрный фон с едва заметным синим оттенком сверху.
+        LinearGradient(colors: [Night.rgb(0x080a10), Night.rgb(0x040508), Night.rgb(0x020203)], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
     }
 }
 struct NightButtonStyle: ButtonStyle {
@@ -97,7 +97,10 @@ enum PosterCache {
         let file = folder.appendingPathComponent(Insecure.SHA1.hash(data: Data(url.utf8)).map { String(format: "%02x", $0) }.joined())
         let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         if let modified, -modified.timeIntervalSinceNow < 30 * 86400, let image = decode(file) { return image }
-        guard let (data, _) = try? await session.data(from: u), let image = thumbnail(data) else { return modified == nil ? nil : decode(file) }
+        var request = URLRequest(url: u)
+        // Обложки MangaLib и Com-X без Referer своего сайта отдают 403.
+        if let host = u.host { if host.hasSuffix("cdnlibs.org") || host.hasSuffix("imglib.info") { request.setValue("https://mangalib.me/", forHTTPHeaderField: "Referer") } else if host.contains("com-x") { request.setValue("https://com-x.life/", forHTTPHeaderField: "Referer") } }
+        guard let (data, _) = try? await session.data(for: request), let image = thumbnail(data) else { return modified == nil ? nil : decode(file) }
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try? data.write(to: file, options: .atomic)
         return image
@@ -225,7 +228,7 @@ struct LoginView: View {
                     .buttonStyle(NightButtonStyle(selected: true)).disabled(busy || email.isEmpty || password.isEmpty)
             }
             Spacer()
-            Text("Yoru Anime \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")").font(.system(size: 12)).foregroundStyle(Night.meta).frame(maxWidth: .infinity)
+            Text("Yoru \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")").font(.system(size: 12)).foregroundStyle(Night.meta).frame(maxWidth: .infinity)
         }.padding(20).background(NightBackground()).presentationDetents([.medium, .large])
     }
 }

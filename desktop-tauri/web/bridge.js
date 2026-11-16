@@ -41,7 +41,52 @@
     },
     // Скачанные серии отдаёт Rust по своей схеме; WebView2 на Windows видит её как http://yoru.localhost.
     dlUrl: name => (platform === 'win32' ? 'http://yoru.localhost/dl/' : 'yoru://dl/') + encodeURIComponent(name),
-    onFullscreen: on('fullscreenChanged')
+    onFullscreen: on('fullscreenChanged'),
+    // Манга: MangaLib через Rust, Com-X — через скрытое окно сайта; картинки — по схеме mimg (на Windows http://mimg.localhost).
+    manga: {
+      lib: (path, query) => invoke('manga_lib', { path, query: query || [] }),
+      libStatus: () => invoke('manga_lib_status'),
+      libLogin: provider => invoke('manga_lib_login', { provider: provider || null }),
+      libLogout: () => invoke('manga_lib_logout'),
+      comx: args => invoke('comx', { args }),
+      comxStatus: () => invoke('comx_status'),
+      comxLogin: () => invoke('comx_login'),
+      comxLogout: () => invoke('comx_logout'),
+      save: (details, chapter, urls) => invoke('manga_save', { details, chapter, urls }),
+      cancel: (id, chapter) => invoke('manga_cancel', { id, chapter }),
+      saved: () => invoke('manga_saved'),
+      remove: (id, chapter) => invoke('manga_delete', { id, chapter: chapter ?? null }),
+      onProgress: on('mangaDl'),
+      base: platform === 'win32' ? 'http://mimg.localhost/' : 'mimg://x/'
+    },
+    // Аккаунт Yoru (src-tauri/src/account.rs): вход, синхронизация и зашифрованные входы в сервисы.
+    account: {
+      status: () => invoke('account_status'),
+      setServer: server => invoke('account_set_server', { server }),
+      register: (login, email, invite, password) => wrap(invoke('account_register', { login, email, invite, password })),
+      signIn: (login, password) => wrap(invoke('account_sign_in', { login, password })),
+      forgot: login => wrap(invoke('account_forgot', { login })),
+      reset: (login, code, password) => wrap(invoke('account_reset', { login, code, password })),
+      me: () => wrap(invoke('account_me')),
+      verifyEmail: code => wrap(invoke('account_verify_email', { code })),
+      resend: () => wrap(invoke('account_resend')),
+      changeEmail: (email, password) => wrap(invoke('account_change_email', { email, password })),
+      changePassword: (old, fresh) => wrap(invoke('account_change_password', { old, fresh })),
+      signOut: all => wrap(invoke('account_sign_out', { all: !!all })),
+      removeDevice: id => wrap(invoke('account_remove_device', { id })),
+      remove: password => wrap(invoke('account_delete', { password })),
+      forget: svc => invoke('account_forget', { svc }).catch(() => {}),
+      sync: state => wrap(invoke('account_sync', { state }))
+    },
+    onAccountChanged: on('yoruChanged'),
+    // Шикимори (src-tauri/src/shiki.rs): ключи приложения и токены остаются в Rust.
+    shiki: {
+      status: () => invoke('shiki_status'),
+      setKeys: (id, secret) => invoke('shiki_set_keys', { id, secret }),
+      login: () => invoke('shiki_login'),
+      logout: () => invoke('shiki_logout'),
+      call: (method, path, body) => invoke('shiki_call', { method, path, body: body ?? null })
+    }
   };
   // Закрытие окна и выход: Rust просит сохранить прогресс и настройки в файл, затем приложение закрывается.
   const dump = () => {

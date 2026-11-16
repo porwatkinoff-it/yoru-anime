@@ -67,7 +67,9 @@ final class Downloads {
   DownloadManager.Request r=new DownloadManager.Request(Uri.parse(record.optString("url")))
    .setDestinationUri(Uri.fromFile(file)).setAllowedOverMetered(!wifi).setAllowedOverRoaming(!wifi)
    .setTitle(Api.title(record.optJSONObject("series"))+" · "+record.optJSONObject("episode").optString("episodeFull"))
-   .setDescription("Yoru Anime").setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+   .setDescription("Yoru")
+   // Прогресс показывает одно общее уведомление Yoru (DownloadService); системные — только если наши уведомления выключены.
+   .setNotificationVisibility(DownloadService.own(c)?DownloadManager.Request.VISIBILITY_HIDDEN:DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
    .addRequestHeader("User-Agent",Api.AGENT);
   return manager(c).enqueue(r);
  }

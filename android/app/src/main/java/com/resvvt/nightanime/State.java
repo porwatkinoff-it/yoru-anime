@@ -14,7 +14,9 @@ final class State {
  static long now(){return System.currentTimeMillis();}
  static void savePosition(Context c,String key,long position){progress(c).edit().putLong(key,position).putLong("ts-"+key,now()).apply();}
  // Доля просмотренного — для полосок прогресса в списке серий и на полке «Продолжить».
- static void saveFraction(Context c,int episode,long t,long length){if(episode!=0&&length>0)progress(c).edit().putFloat("watch-"+episode,Math.min(1f,(float)t/length)).apply();}
+ static void saveFraction(Context c,int episode,long t,long length){if(episode!=0&&length>0)progress(c).edit().putFloat("watch-"+episode,Math.min(1f,(float)t/length)).putLong("len-watch-"+episode,length).putLong("ts-watch-"+episode,now()).apply();}
+ // Досмотрено, как на iOS: 90% серии или больше половины и до конца меньше 3 минут (титры и превью следующей).
+ static boolean nearlyDone(Context c,int episode){SharedPreferences p=progress(c);float f=p.getFloat("watch-"+episode,0f);long len=p.getLong("len-watch-"+episode,0);return f>=0.9f||f>=0.5f&&len>0&&len*(1f-f)<=180_000;}
  static float fraction(Context c,int episode){return episodes(c).getBoolean("done-"+episode,false)?1f:progress(c).getFloat("watch-"+episode,0f);}
  // «Серии» без трейлеров и спецвыпусков (SP): по ним решается, досмотрено ли аниме.
  static List<Integer> regular(List<JSONObject> eps){boolean tv=false;for(JSONObject e:eps)tv|="tv".equals(e.optString("episodeType"));List<Integer> ids=new ArrayList<>();
@@ -25,7 +27,7 @@ final class State {
  static boolean knows(Context c,int sid){return now()-episodes(c).getLong("final-ts-"+sid,0)<12*3600*1000L;}
  static boolean finished(Context c,int sid){int f=episodes(c).getInt("final-"+sid,0);return f!=0&&episodes(c).getBoolean("done-"+f,false);}
  static JSONArray list(Context c,String key){try{return new JSONArray(library(c).getString(key,"[]"));}catch(Exception e){return new JSONArray();}}
- static void saveList(Context c,String key,JSONArray a,long t){library(c).edit().putString(key,a.toString()).putLong("t-"+key,t).apply();}
+ static void saveList(Context c,String key,JSONArray a,long t){library(c).edit().putString(key,a.toString()).putLong("t-"+key,t).apply();Yoru.changed(c);}
 
  static JSONObject export(Context c)throws JSONException{
   JSONObject o=new JSONObject();o.put("v",1);

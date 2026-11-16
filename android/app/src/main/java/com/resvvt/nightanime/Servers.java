@@ -15,7 +15,13 @@ final class Servers {
  interface Each{void run(Result r);}
 
  static SharedPreferences prefs(Context c){return c.getSharedPreferences("servers",0);}
- static boolean auto(Context c){return prefs(c).getBoolean("auto",true);}
+ // Выбор сервера всегда автоматический — пользователь его не видит (2.3.3).
+ static boolean auto(Context c){return true;}
+ // Раз в сутки в фоне: проверка серверов по последней включённой серии. Ошибки молча пропускаем.
+ static void autoTest(Context c){
+  if(System.currentTimeMillis()-tested(c)<24L*3600*1000||seen(c).isEmpty()&&State.lastPlay(c).getString("translation","").isEmpty())return;
+  try{test(c,sample(c),r->{});}catch(Exception ignored){}
+ }
  static String best(Context c){return prefs(c).getString("best",null);}
  static void forget(Context c,String host){if(host!=null&&host.equals(best(c)))prefs(c).edit().remove("best").apply();}
  static boolean isVideo(String host){return host!=null&&host.startsWith("ru-")&&host.split("\\.").length>=3;}

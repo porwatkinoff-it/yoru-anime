@@ -1,4 +1,4 @@
-# Сборка Yoru Anime для компьютеров на Rust (Tauri): Windows, Linux и Mac Intel.
+# Сборка Yoru для компьютеров на Rust (Tauri): Windows, Linux и Mac Intel.
 # Mac Apple Silicon собирается локально. Файлы называются так же, как у Electron-версии 2.0.x,
 # чтобы её автообновление находило новую версию.
 name: Desktop (Tauri)
@@ -84,7 +84,7 @@ jobs:
             linux-x86_64) cp "$B"/appimage/*.AppImage "out/Yoru-Anime-$V-linux-x86_64.AppImage"
                           cp "$B"/deb/*.deb "out/Yoru-Anime-$V-linux-amd64.deb" ;;
             linux-arm64)  cp "$B"/appimage/*.AppImage "out/Yoru-Anime-$V-linux-arm64.AppImage" ;;
-            mac-x64)      ditto -c -k --keepParent "$B/macos/Yoru Anime.app" "out/Yoru-Anime-$V-mac-x64.zip"
+            mac-x64)      ditto -c -k --keepParent "$B/macos/Yoru.app" "out/Yoru-Anime-$V-mac-x64.zip"
                           cp "$B"/dmg/*.dmg "out/Yoru-Anime-$V-mac-x64.dmg" ;;
           esac
           ls -la out

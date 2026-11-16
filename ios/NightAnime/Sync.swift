@@ -67,7 +67,7 @@ enum TVSync {
     @MainActor static func run(_ store: AnimeStore) async {
         #if DEBUG
         // Тестовые данные (--fixtures) не должны попадать в настоящую историю на телевизоре.
-        if QA.value("--fixtures") != nil || QA.value("--player-file") != nil { return }
+        if QA.value("--fixtures") != nil || QA.value("--player-file") != nil || QA.has("--no-sync") || QA.has("--no-tv") { return }
         #endif
         guard !running else { return }
         running = true; defer { running = false }
@@ -80,9 +80,9 @@ enum TVSync {
         } catch { }
     }
 
-    static func find() async -> NWEndpoint? {
+    static func find(_ type: String = "_nightanime._tcp") async -> NWEndpoint? {
         await withCheckedContinuation { (c: CheckedContinuation<NWEndpoint?, Never>) in
-            let browser = NWBrowser(for: .bonjour(type: "_nightanime._tcp", domain: nil), using: .tcp)
+            let browser = NWBrowser(for: .bonjour(type: type, domain: nil), using: .tcp)
             var finished = false
             let finish: (NWEndpoint?) -> Void = { e in guard !finished else { return }; finished = true; browser.cancel(); c.resume(returning: e) }
             browser.browseResultsChangedHandler = { results, _ in if let r = results.first { finish(r.endpoint) } }

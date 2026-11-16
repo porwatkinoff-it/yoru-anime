@@ -69,7 +69,7 @@ final class Updater {
    s.commit(done.getIntentSender());
   }
  }
- // Разрешение «Установка неизвестных приложений» для Yoru Anime: без него Android не даст обновиться.
+ // Разрешение «Установка неизвестных приложений» для Yoru: без него Android не даст обновиться.
  static boolean canInstall(Context c){return c.getPackageManager().canRequestPackageInstalls();}
  static Intent permissionIntent(Context c){return new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+c.getPackageName()));}
 }

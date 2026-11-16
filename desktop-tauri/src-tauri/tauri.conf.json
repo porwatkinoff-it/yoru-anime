@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Yoru Anime",
-  "mainBinaryName": "Yoru Anime",
-  "version": "2.1.0",
+  "productName": "Yoru",
+  "mainBinaryName": "Yoru",
+  "version": "2.3.3",
   "identifier": "com.resvvt.yoruanime",
   "build": {
     "frontendDist": "../dist-ui",
@@ -26,7 +26,7 @@
       "deb"
     ],
     "category": "Entertainment",
-    "shortDescription": "Аниме с Anime 365",
+    "shortDescription": "Аниме и манга",
     "copyright": "© 2026 resvvt",
     "icon": [
       "icons/32x32.png",

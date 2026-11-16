@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 import MobileVLCKit
+import AVFoundation
+import MediaPlayer
 
 struct NativePlayerView: UIViewControllerRepresentable {
     let playback: Playback
@@ -32,6 +34,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     var selected = 0, sourceIndex = 0, pendingTime: Int32 = 0, onClose: ((Bool, Bool) -> Void)?, isClosing = false
     var waitingForFrame = true, frameBaseline: Int32 = -1, waitStarted = Date(), ticks = 0
     var ended = false, countdown = 0, countdownTimer: Timer?, errorShown = false, shownPlaying: Bool?
+    var remoteTargets: [(MPRemoteCommand, Any)] = [], nowPlaying: [String: Any] = [:], reportedPlaying: Bool?
     var compact: Bool { traitCollection.horizontalSizeClass == .compact || traitCollection.verticalSizeClass == .compact }
 
     init(_ p: Playback) { playback = p; super.init(nibName: nil, bundle: nil) }
@@ -151,6 +154,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
 
         vlc.drawable = surface; vlc.delegate = self
         UIApplication.shared.isIdleTimerDisabled = true
+        startNowPlaying()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
         timer?.tolerance = 0.1
         NotificationCenter.default.addObserver(self, selector: #selector(enteredBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -166,7 +170,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     func label(_ h: Int) -> String { h >= 2160 ? "4K UHD" : h > 0 ? "\(h)p" : "Авто" }
     func speedMenu() -> UIMenu { UIMenu(title: "Скорость", children: Self.rates.map { r in UIAction(title: rateText(r), state: abs(vlc.rate - r) < 0.01 ? .on : .off) { [weak self] _ in self?.setRate(r) } }) }
     func rateText(_ r: Float) -> String { (r == 1 ? "1" : String(format: "%g", r).replacingOccurrences(of: ".", with: ",")) + "×" }
-    func setRate(_ r: Float) { vlc.rate = r; speedButton.configuration?.title = "Скорость " + rateText(r); speedButton.menu = speedMenu(); scheduleHide() }
+    func setRate(_ r: Float) { vlc.rate = r; updateNowPlaying(); speedButton.configuration?.title = "Скорость " + rateText(r); speedButton.menu = speedMenu(); scheduleHide() }
 
     // MARK: Playback
     func prepare() async {
@@ -198,14 +202,16 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         scheduleHide()
     }
     // Звук включается только после первого показанного кадра — так же, как на ТВ.
-    func waitForFrame() { waitingForFrame = true; frameBaseline = vlc.time.intValue; waitStarted = Date(); loading.startAnimating(); loading.isHidden = false; vlc.audio?.volume = 0 }
+    // При перемотке звук не выключаем: VLCKit возвращает громкость с задержкой, и после перемотки было тихо секунду-две.
+    func waitForFrame(mute: Bool = true) { let wasMuted = waitingForFrame && (vlc.audio?.volume ?? 100) == 0; waitingForFrame = true; frameBaseline = vlc.time.intValue; waitStarted = Date(); loading.startAnimating(); loading.isHidden = false; if mute || wasMuted { vlc.audio?.volume = 0 } }
     func switchQuality(_ i: Int) { pendingTime = vlc.time.intValue; selected = i; sourceIndex = 0; qualityButton.configuration?.title = label(playback.options[i].height); start() }
     func seek(by delta: Int32) { seek(to: vlc.time.intValue + delta); flash(delta > 0 ? "+10 с" : "−10 с") }
     func seek(to position: Int32) {
         let length = vlc.media?.length.intValue ?? 0
         guard length > 0, vlc.isSeekable else { stateLabel.text = "Перемотка будет доступна после загрузки"; return }
         let target = max(0, min(length - 1000, position))
-        resumed = true; pendingTime = 0; waitForFrame(); vlc.time = VLCTime(int: target)
+        resumed = true; pendingTime = 0; waitForFrame(mute: false); vlc.time = VLCTime(int: target)
+        updateNowPlaying(at: target)
         HistoryState.savePosition(playback.key, Int(target)); scheduleHide()
     }
     func skipIntro() { seek(to: vlc.time.intValue + Self.skipStep); flash("Опенинг пропущен") }
@@ -236,6 +242,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
             setText(stateLabel, subtitleFile == nil ? "" : (subAttached ? "" : "Загрузка субтитров…"))
         }
         if !chrome.isHidden { refreshChrome() }
+        if reportedPlaying != vlc.isPlaying || ticks % 10 == 0 { updateNowPlaying() }
         // «Следующая серия»: на титрах в конце и с отсчётом после окончания.
         setFloating(upNextButton, visible: playback.hasNext && length > 0 && (ended || length - now < Self.creditsWindow))
         if vlc.state == .ended && !ended { finishedEpisode() }
@@ -259,7 +266,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     func setText(_ l: UILabel, _ s: String) { if l.text != s { l.text = s } }
     func keepAwake(_ on: Bool) { if UIApplication.shared.isIdleTimerDisabled != on { UIApplication.shared.isIdleTimerDisabled = on } }
     // Доля просмотренного — для полосок прогресса в списке серий и на полке «Продолжить».
-    func saveFraction(_ t: Int32, _ length: Int32) { guard playback.episodeId != 0, length > 0 else { return }; UserDefaults.standard.set(min(1, Double(t) / Double(length)), forKey: "watch-\(playback.episodeId)") }
+    func saveFraction(_ t: Int32, _ length: Int32) { guard playback.episodeId != 0, length > 0 else { return }; let k = "watch-\(playback.episodeId)"; UserDefaults.standard.set(min(1, Double(t) / Double(length)), forKey: k); UserDefaults.standard.set(HistoryState.now(), forKey: "ts-" + k) }
     func setFloating(_ b: UIButton, visible: Bool) {
         guard b.isHidden == visible else { return }
         if visible { b.alpha = 0; b.isHidden = false; UIView.animate(withDuration: 0.25) { b.alpha = 1 } }
@@ -288,7 +295,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         let timing = UIMenu(title: "Задержка · \(delay)", options: .displayInline, children: [UIAction(title: "Раньше на 0,5 с") { [weak self] _ in self?.vlc.currentVideoSubTitleDelay -= 500_000 }, UIAction(title: "Позже на 0,5 с") { [weak self] _ in self?.vlc.currentVideoSubTitleDelay += 500_000 }, UIAction(title: "Сбросить задержку") { [weak self] _ in self?.vlc.currentVideoSubTitleDelay = 0 }])
         return [UIMenu(options: .displayInline, children: tracks), timing]
     }
-    func showError(_ message: String) { guard presentedViewController == nil, !isClosing else { return }; vlc.pause(); errorShown = true; keepAwake(false); let alert = UIAlertController(title: "Yoru Anime", message: message, preferredStyle: .alert); alert.addAction(UIAlertAction(title: "Закрыть", style: .default) { [weak self] _ in self?.closePlayer() }); present(alert, animated: true) }
+    func showError(_ message: String) { guard presentedViewController == nil, !isClosing else { return }; vlc.pause(); errorShown = true; keepAwake(false); let alert = UIAlertController(title: "Yoru", message: message, preferredStyle: .alert); alert.addAction(UIAlertAction(title: "Закрыть", style: .default) { [weak self] _ in self?.closePlayer() }); present(alert, animated: true) }
 
     // MARK: Chrome
     func showPanel() { hideWork?.cancel(); guard chrome.alpha < 1 else { return }; chrome.isHidden = false; refreshChrome(); UIView.animate(withDuration: 0.2) { self.chrome.alpha = 1 } }
@@ -299,6 +306,69 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         if vlc.isPlaying { vlc.pause(); showPanel() }
         else if vlc.state == .ended || ended { pendingTime = 0; HistoryState.savePosition(playback.key, 0); start() }
         else { vlc.play(); scheduleHide() }
+    }
+    func remotePlay() { if !vlc.isPlaying { playPause() } }
+    func remotePause() { if vlc.isPlaying { playPause() } }
+
+    // MARK: Now Playing — пауза с наушников, из пункта управления и с экрана блокировки.
+    func startNowPlaying() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
+        // Вынули наушники или пришёл звонок — пауза, как в любом видеоплеере.
+        NotificationCenter.default.addObserver(self, selector: #selector(audioRouteChanged(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(audioInterrupted(_:)), name: AVAudioSession.interruptionNotification, object: nil)
+        let c = MPRemoteCommandCenter.shared()
+        func on(_ cmd: MPRemoteCommand, _ f: @escaping (MPRemoteCommandEvent) -> Void) {
+            cmd.isEnabled = true
+            let t = cmd.addTarget { [weak self] e in guard let self, !self.isClosing else { return .commandFailed }; DispatchQueue.main.async { f(e) }; return .success }
+            remoteTargets.append((cmd, t))
+        }
+        on(c.playCommand) { [weak self] _ in self?.remotePlay() }
+        on(c.pauseCommand) { [weak self] _ in self?.remotePause() }
+        on(c.togglePlayPauseCommand) { [weak self] _ in self?.playPause() }
+        c.skipForwardCommand.preferredIntervals = [10]; c.skipBackwardCommand.preferredIntervals = [10]
+        on(c.skipForwardCommand) { [weak self] _ in self?.seek(by: 10_000) }
+        on(c.skipBackwardCommand) { [weak self] _ in self?.seek(by: -10_000) }
+        on(c.changePlaybackPositionCommand) { [weak self] e in if let e = e as? MPChangePlaybackPositionCommandEvent { self?.seek(to: Int32(e.positionTime * 1000)) } }
+        if playback.hasNext { on(c.nextTrackCommand) { [weak self] _ in self?.closePlayer(next: true) } }
+        nowPlaying = [MPMediaItemPropertyTitle: episodeLabel.text ?? titleLabel.text ?? playback.title, MPMediaItemPropertyAlbumTitle: titleLabel.text ?? "", MPMediaItemPropertyArtist: "Yoru",
+                      MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue]
+        if episodeLabel.text != nil { nowPlaying[MPMediaItemPropertyArtist] = titleLabel.text }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlaying
+        if let poster = playback.poster, !poster.isEmpty {
+            Task { [weak self] in
+                guard let image = await PosterCache.image(poster), let self, !self.isClosing else { return }
+                self.nowPlaying[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                self.updateNowPlaying()
+            }
+        }
+    }
+    func updateNowPlaying(at time: Int32? = nil) {
+        guard !isClosing else { return }
+        let length = vlc.media?.length.intValue ?? 0, now = max(0, time ?? vlc.time.intValue), playing = vlc.isPlaying
+        reportedPlaying = playing
+        if length > 0 { nowPlaying[MPMediaItemPropertyPlaybackDuration] = Double(length) / 1000 }
+        nowPlaying[MPNowPlayingInfoPropertyElapsedPlaybackTime] = Double(now) / 1000
+        nowPlaying[MPNowPlayingInfoPropertyPlaybackRate] = playing ? Double(vlc.rate) : 0
+        nowPlaying[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlaying
+        MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
+    }
+    @objc func audioRouteChanged(_ n: Notification) {
+        guard let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt, AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+        DispatchQueue.main.async { [weak self] in self?.remotePause() }
+    }
+    @objc func audioInterrupted(_ n: Notification) {
+        guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt, AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+        DispatchQueue.main.async { [weak self] in self?.remotePause() }
+    }
+    func stopNowPlaying() {
+        for (cmd, t) in remoteTargets { cmd.removeTarget(t) }
+        remoteTargets = []
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
     @objc func seekStart() { dragging = true; cancelCountdown(); hideWork?.cancel() }
     @objc func seekMove() { let length = vlc.media?.length.intValue ?? 0; let t = Int32(Float(length) * slider.value); elapsedLabel.text = clock(t / 1000); remainingLabel.text = "−" + clock(max(0, length - t) / 1000) }
@@ -320,9 +390,11 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     func closePlayer(next: Bool = false) {
         guard !isClosing else { return }
         let t = vlc.time.intValue, l = vlc.media?.length.intValue ?? 0
-        let done = next || ended || (l > 0 && t > 0 && (Double(t) > Double(l) * 0.93 || l - t < 120_000))
+        // Засчитываем, если досмотрено 90% или (после середины) осталось ≤ 3 минут — эндинг и превью.
+        let done = next || ended || (l > 0 && t > 0 && (Double(t) >= Double(l) * 0.9 || (Double(t) >= Double(l) * 0.5 && l - t <= 180_000)))
         if resumed && !ended && t > 0 { HistoryState.savePosition(playback.key, Int(t)); saveFraction(t, l) }
         isClosing = true; timer?.invalidate(); countdownTimer?.invalidate(); hideWork?.cancel(); vlc.stop(); vlc.drawable = nil
+        stopNowPlaying()
         UIApplication.shared.isIdleTimerDisabled = false; if let file = subtitleFile { try? FileManager.default.removeItem(at: file) }
         if UIDevice.current.userInterfaceIdiom == .phone, let scene = view.window?.windowScene { scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) }
         onClose?(done, next)
