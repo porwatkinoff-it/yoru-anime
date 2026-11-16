@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import CryptoKit
 
 struct AnimeItem: Identifiable, Hashable {
     let id: Int
@@ -11,6 +12,7 @@ struct AnimeItem: Identifiable, Hashable {
     let kind: String
     let season: String
     let score: Double
+    let malId: Int
     let genres: [Genre]
     let summary: String
     let raw: Data
@@ -25,6 +27,7 @@ struct AnimeItem: Identifiable, Hashable {
         posterSmall = value["posterUrlSmall"] as? String ?? poster
         season = value["season"] as? String ?? ""
         score = (value["myAnimeListScore"] as? NSNumber)?.doubleValue ?? 0
+        malId = (value["myAnimeListId"] as? NSNumber)?.intValue ?? 0
         genres = (value["genres"] as? [[String: Any]] ?? []).compactMap { g in (g["id"] as? NSNumber).map { Genre(id: $0.intValue, title: g["title"] as? String ?? "") } }
         // Описания с Шикимори размечены BB-кодами вида [character=1]Имя[/character] — оставляем только текст.
         let text = (value["descriptions"] as? [[String: Any]] ?? []).compactMap { $0["value"] as? String }.first ?? ""
@@ -91,7 +94,7 @@ struct Translation: Identifiable {
     }
 }
 struct VideoOption: Identifiable { let id: String; let url: URL; let height: Int; var alternatives: [URL] = [] }
-struct Playback: Identifiable { let id = UUID(); let options: [VideoOption]; let subtitles: URL?; let title: String; let key: String; var episodeId = 0; var hasNext = false; var offline = false }
+struct Playback: Identifiable { let id = UUID(); let options: [VideoOption]; let subtitles: URL?; let title: String; let key: String; var episodeId = 0; var hasNext = false; var offline = false; var poster: String? = nil }
 struct APIError: LocalizedError { let message: String; var errorDescription: String? { message } }
 enum Vault {
     static let service = "com.resvvt.nightanime"
@@ -120,14 +123,19 @@ enum Vault {
     // Состояние интерфейса: вкладка, путь на главной и загруженные полки (живут до перезапуска).
     @Published var tab = 0
     @Published var homePath: [Route] = []
+    @Published var searchPath: [Route] = []
     @Published var shelves: [Shelf: [AnimeItem]] = [:]
     @Published var shelfErrors: [Shelf: String] = [:]
     let heroPick = Int.random(in: 0..<5)
     private var loading: Set<Shelf> = []
+    // Подборка сразу показывается из кэша прошлого запуска, свежая подменяет её, когда придёт.
+    private var stale: Set<Shelf> = []
     func loadShelf(_ s: Shelf) async {
-        guard shelves[s] == nil, !loading.contains(s) else { return }
+        guard shelves[s] == nil || stale.contains(s), !loading.contains(s) else { return }
         loading.insert(s); defer { loading.remove(s) }
-        do { shelves[s] = try await shelf(s.params); shelfErrors[s] = nil } catch { shelfErrors[s] = error.localizedDescription }
+        if shelves[s] == nil, let cached = ShelfCache.read(s) { shelves[s] = cached; stale.insert(s) }
+        do { let a = try await shelf(s.params); shelves[s] = a; stale.remove(s); shelfErrors[s] = nil; ShelfCache.write(s, a) }
+        catch { if shelves[s] == nil { shelfErrors[s] = error.localizedDescription } }
     }
     let session: URLSession = { let c = URLSessionConfiguration.ephemeral; c.timeoutIntervalForRequest = 25; c.urlCache = nil; return URLSession(configuration: c) }()
     let base = "https://smotret-anime.app"
@@ -151,7 +159,7 @@ enum Vault {
     func login(_ email: String, _ password: String, _ app: String) async throws {
         let d = try await request("login", ["email": email, "password": password, "app": app]) as? [String: Any]
         guard let t = d?["access_token"] as? String, !t.isEmpty else { throw APIError(message: "Не удалось выполнить вход") }
-        token = t; Vault.save(t); await refreshAccount()
+        token = t; Vault.save(t); YoruAccount.shared.vaultChanged("anime365"); await refreshAccount()
     }
     func refreshAccount() async {
         guard !token.isEmpty, let d = try? await request("me", authenticated: true) as? [String: Any] else { return }
@@ -179,7 +187,7 @@ enum Vault {
         return a.filter { ($0["isHentai"] as? Int ?? 0) == 0 }.map(AnimeItem.init)
     }
     // Полки главной и поиска: те же фильтры, что у сайта (год, тип, жанр); сайт сортирует по рейтингу.
-    nonisolated static let cardFields = "id,titles,posterUrl,posterUrlSmall,typeTitle,year,myAnimeListScore,season,genres,isHentai"
+    nonisolated static let cardFields = "id,titles,posterUrl,posterUrlSmall,typeTitle,year,myAnimeListScore,myAnimeListId,season,genres,isHentai"
     func shelf(_ params: [String: String], offset: Int = 0, limit: Int = 24) async throws -> [AnimeItem] {
         #if DEBUG
         if let dir = QA.value("--fixtures") { return offset > 0 ? [] : Fixtures.items(dir).shuffled(seed: params.description) }
@@ -224,28 +232,40 @@ enum Vault {
         if QA.value("--fixtures") != nil { return [] }
         #endif
         var r = URLRequest(url: URL(string: "https://smotret-anime.co/catalog/\(item.id)")!); r.setValue("NightAnime/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
-        guard let (data, _) = try? await session.data(for: r), let html = String(data: data, encoding: .utf8) else { return [] }
-        let pattern = #"<li class="m-connections-list__item( m-connections-list__item_current)?"><a href="/catalog/[^"]*?-(\d+)">.*?</a>\s*<span class="m-connections-list__type">(.*?)</span>[^<]*(?:<span class="m-connections-list__type">(.*?)</span>,\s*)?<span class="m-connections-list__year">(\d*)</span>"#
-        guard let rx = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators) else { return [] }
+        // Сайт часто обрывает соединение — до трёх попыток с паузой.
+        var page: String?
+        for attempt in 0..<3 {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_200_000_000) }
+            if let (data, _) = try? await session.data(for: r), let html = String(data: data, encoding: .utf8), html.contains("m-connections-list") || html.contains("</html>") { page = html; break }
+        }
+        guard let html = page else { return [] }
+        // Внутри пункта не бывает тегов: [^<]* не даёт совпадению перескочить в соседний пункт (у анонсов вместо года стоит «анонс»).
+        let pattern = #"<li class="m-connections-list__item( m-connections-list__item_current)?"><a href="/catalog/[^"]*?-(\d+)">[^<]*</a>\s*<span class="m-connections-list__type">([^<]*)</span>[^<]*(?:<span class="m-connections-list__type">([^<]*)</span>,\s*)?<span class="m-connections-list__year">([^<]*)</span>"#
+        guard let rx = try? NSRegularExpression(pattern: pattern) else { return [] }
         let ns = html as NSString; var order: [Int] = [], years: [Int: Int] = [:], current = 0
         func group(_ m: NSTextCheckingResult, _ i: Int) -> String? { m.range(at: i).location == NSNotFound ? nil : ns.substring(with: m.range(at: i)) }
         for m in rx.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
             let cur = group(m, 1) != nil, rel = group(m, 4)
-            guard group(m, 3) == "ТВ сериал", cur || rel == nil || ["основная история", "продолжение", "предыстория"].contains(rel!), let sid = Int(group(m, 2) ?? "") else { continue }
+            guard group(m, 3) == "ТВ сериал", Int(group(m, 5) ?? "") != nil, cur || rel == nil || ["основная история", "продолжение", "предыстория", "полная версия"].contains(rel!), let sid = Int(group(m, 2) ?? "") else { continue }
             if cur { current = sid }
             if years[sid] == nil { order.append(sid); years[sid] = Int(group(m, 5) ?? "") ?? 0 }
         }
+        // Анонс или часть без года: сайт не отмечает её текущей — добавляем её в конец списка, иначе сезоны пропадают.
+        if current == 0 && !order.isEmpty { current = item.id; if years[item.id] == nil { order.append(item.id); years[item.id] = 0 } }
         guard order.count > 1, current != 0 else { seasonCache[item.id] = []; return [] }
         let query = "series?fields=" + Self.cardFields + ",descriptions" + order.map { "&id[]=\($0)" }.joined()
         guard let list = try? await request(query) as? [[String: Any]] else { return [] }
         let items = Dictionary(list.map { (($0["id"] as? NSNumber)?.intValue ?? 0, AnimeItem($0)) }, uniquingKeysWith: { a, _ in a })
         // Порядок как на сайте, но по годам выхода: сайт показывает дерево, а не хронологию.
-        let sorted = order.filter { items[$0] != nil }.enumerated().sorted { (years[$0.1] == 0 ? Int.max : years[$0.1]!, $0.0) < (years[$1.1] == 0 ? Int.max : years[$1.1]!, $1.0) }.map(\.1)
+        // В один год — по id: номера на сайте растут по мере выхода.
+        let sorted = order.filter { items[$0] != nil }.sorted { (years[$0] == 0 ? Int.max : years[$0]!, $0) < (years[$1] == 0 ? Int.max : years[$1]!, $1) }
         let result = sorted.enumerated().map { i, sid -> Season in
             let a = items[sid]!; let n = a.title.range(of: #"(\d+)\s*сезон"#, options: .regularExpression).map { String(a.title[$0]).components(separatedBy: CharacterSet.decimalDigits.inverted).joined() }
             return Season(id: sid, label: n.map { "\($0) сезон" } ?? (i == 0 ? "1 сезон" : a.title), current: sid == current, item: a)
         }
         let out = result.count > 1 ? result : []
+        // Тот же список подходит всем сезонам франшизы — переход между ними не ждёт сайт.
+        for s in out { seasonCache[s.id] = out.map { Season(id: $0.id, label: $0.label, current: $0.id == s.id, item: $0.item) } }
         seasonCache[item.id] = out; return out
     }
     func episodes(_ item: AnimeItem) async throws -> [Episode] { try await details(item).1 }
@@ -280,13 +300,19 @@ enum Vault {
         let d = UserDefaults.standard
         guard HistoryState.now() - HistoryState.int64("checked") > 3_600_000 else { return }
         d.set(HistoryState.now(), forKey: "checked")
-        for item in favorites.prefix(30) {
-            guard let n = try? await episodes(item).count else { continue }
-            d.set(n, forKey: "count-\(item.id)"); if d.object(forKey: "known-\(item.id)") == nil { d.set(n, forKey: "known-\(item.id)") }
+        // По 4 запроса сразу: 30 аниме из списка проверяются за пару секунд, а не по одному.
+        var results: [(Int, Int)] = []
+        await withTaskGroup(of: (Int, Int)?.self) { g in
+            for (i, item) in favorites.prefix(30).enumerated() {
+                if i >= 4, let r = await g.next(), let r { results.append(r) }
+                g.addTask { @MainActor in (try? await self.episodes(item).count).map { (item.id, $0) } }
+            }
+            for await r in g { if let r { results.append(r) } }
         }
+        for (id, n) in results { d.set(n, forKey: "count-\(id)"); if d.object(forKey: "known-\(id)") == nil { d.set(n, forKey: "known-\(id)") } }
         objectWillChange.send()
     }
-    func sync() async { await TVSync.run(self) }
+    func sync() async { await YoruAccount.shared.sync(self); await TVSync.run(self) }
     func rememberedTranslation(_ item: AnimeItem) -> String { UserDefaults.standard.string(forKey: "tr-\(item.id)") ?? "" }
     func translations(_ episode: Episode, for item: AnimeItem) async throws -> [Translation] {
         #if DEBUG
@@ -336,7 +362,7 @@ enum Vault {
         let sub = (d["subtitlesUrl"] as? String).flatMap(makeURL)
         if t.kind.hasPrefix("sub") && sub == nil { throw APIError(message: "Для этого перевода нет ссылки на субтитры. Выберите другой перевод.") }
         remember(t, e, item)
-        return Playback(options: options, subtitles: sub, title: "\(item.title) · \(e.title)", key: "position-\(t.id)", episodeId: e.id)
+        return Playback(options: options, subtitles: sub, title: "\(item.title) · \(e.title)", key: "position-\(t.id)", episodeId: e.id, poster: item.poster)
     }
 }
 
@@ -372,3 +398,33 @@ extension Fixtures {
     }
 }
 #endif
+
+// Подборки главной на диске (Caches): до 2 суток, чтобы при запуске не смотреть на пустые ряды.
+enum ShelfCache {
+    static let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("shelves", isDirectory: true)
+    static func file(_ s: Shelf) -> URL {
+        let key = s.title + "?" + s.params.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "&")
+        return folder.appendingPathComponent(Insecure.SHA1.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined() + ".json")
+    }
+    static var enabled: Bool {
+        #if DEBUG
+        if QA.value("--fixtures") != nil { return false }
+        #endif
+        return true
+    }
+    static func read(_ s: Shelf) -> [AnimeItem]? {
+        let f = file(s)
+        guard enabled, let m = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, -m.timeIntervalSinceNow < 2 * 86400,
+              let data = try? Data(contentsOf: f), let a = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]], !a.isEmpty else { return nil }
+        return a.map(AnimeItem.init)
+    }
+    static func write(_ s: Shelf, _ items: [AnimeItem]) {
+        guard enabled, !items.isEmpty else { return }
+        let objects = items.map(\.object), f = file(s)
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONSerialization.data(withJSONObject: objects) else { return }
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try? data.write(to: f, options: .atomic)
+        }
+    }
+}

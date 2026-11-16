@@ -26,3 +26,5 @@ build/
 desktop/node_modules/
 desktop/dist/
 !desktop/build/
+# Ключи приложения Шикимори (OAuth) — вводятся скриптом tools/shikimori-setup.sh, в репозиторий не попадают
+shikimori.local.json

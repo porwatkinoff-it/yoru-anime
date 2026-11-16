@@ -8,7 +8,8 @@ struct ServerResult: Identifiable, Equatable { let host: String; var mbit: Doubl
 
 enum Servers {
     static var d: UserDefaults { .standard }
-    static var auto: Bool { get { d.object(forKey: "server-auto") as? Bool ?? true } set { d.set(newValue, forKey: "server-auto") } }
+    // Выбор сервера полностью автоматический: пользователь его не видит и не настраивает.
+    static let auto = true
     static var best: String? { get { d.string(forKey: "server-best") } set { d.set(newValue, forKey: "server-best") } }
     static var seen: [String] { d.stringArray(forKey: "servers-seen") ?? [] }
     static var results: [String: Double] { d.dictionary(forKey: "servers-mbit") as? [String: Double] ?? [:] }
@@ -28,26 +29,38 @@ enum Servers {
     }
 
     // Проверка: один и тот же файл (первые 4 МБ) с каждого сервера, по очереди.
-    static func test(sample: URL, each: @escaping @MainActor (ServerResult) -> Void) async -> [ServerResult] {
+    // Тихая проверка раз в сутки и после отказа лучшего сервера. Только по Wi‑Fi: мобильный трафик не тратим.
+    @MainActor static var checking = false
+    @MainActor static func autoCheck(_ store: AnimeStore) async {
+        let stale = tested.map { Date().timeIntervalSince($0) > 24 * 3600 } ?? true
+        guard !checking, !store.token.isEmpty, stale || (best == nil && seen.count > 1) else { return }
+        checking = true; defer { checking = false }
+        guard let sample = try? await store.serverSample() else { return }
+        _ = await test(sample: sample, bytes: 2 << 20, cellular: false) { _ in }
+    }
+
+    static func test(sample: URL, bytes: Int = 4 << 20, cellular: Bool = true, each: @escaping @MainActor (ServerResult) -> Void) async -> [ServerResult] {
         var hosts = seen
         if let h = sample.host, isVideo(h), !hosts.contains(h) { hosts.insert(h, at: 0) }
         var out: [ServerResult] = []
-        let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 15; config.urlCache = nil
+        let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 15; config.urlCache = nil; config.allowsExpensiveNetworkAccess = cellular
         let session = URLSession(configuration: config)
         for host in hosts {
             var c = URLComponents(url: sample, resolvingAgainstBaseURL: false)!; c.host = host
-            var r = URLRequest(url: c.url!); r.setValue("bytes=0-4194303", forHTTPHeaderField: "Range"); r.setValue("NightAnime/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+            var r = URLRequest(url: c.url!); r.setValue("bytes=0-\(bytes - 1)", forHTTPHeaderField: "Range"); r.setValue("NightAnime/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
             var result = ServerResult(host: host)
             let start = Date()
             do {
                 let (data, response) = try await session.data(for: r)
                 let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                if code / 100 == 2, data.count > 100_000 { result.mbit = Double(data.count) * 8 / 1e6 / max(Date().timeIntervalSince(start), 0.001) }
+                if code / 100 == 2, data.count > min(100_000, bytes / 2) { result.mbit = Double(data.count) * 8 / 1e6 / max(Date().timeIntervalSince(start), 0.001) }
                 else { result.error = "не отдал файл (\(code))" }
             } catch { result.error = (error as NSError).code == NSURLErrorTimedOut ? "слишком медленно" : "недоступен" }
             out.append(result)
             await each(result)
         }
+        // Сеть пропала посреди проверки — прежний выбор не трогаем.
+        guard out.contains(where: { $0.mbit != nil }) else { return out }
         let speeds = Dictionary(uniqueKeysWithValues: out.compactMap { r in r.mbit.map { (r.host, $0) } })
         d.set(speeds, forKey: "servers-mbit"); d.set(Date(), forKey: "servers-tested")
         // Неработающие серверы забываем, быстрые — в начало списка.
@@ -57,13 +70,9 @@ enum Servers {
     }
 }
 
-// Меню аккаунта: имя, подписка и видеосерверы с проверкой скорости.
+// Меню аккаунта: имя и подписка. Видеосервер выбирается сам (Servers.autoCheck).
 struct AccountPanel: View {
     @EnvironmentObject var store: AnimeStore
-    @State var results: [ServerResult] = []
-    @State var testing = false
-    @State var message = ""
-    @State var auto = Servers.auto
     static let day: DateFormatter = { let f = DateFormatter(); f.locale = Locale(identifier: "ru_RU"); f.dateFormat = "d MMMM yyyy"; return f }()
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -71,33 +80,8 @@ struct AccountPanel: View {
                 Text(store.account).font(.system(size: 17, weight: .bold)).foregroundStyle(Night.text)
                 subscription
             }
-            row {
-                Text("Сервер видео").font(.system(size: 17, weight: .bold)).foregroundStyle(Night.text)
-                Picker("Сервер видео", selection: $auto) { Text("Самый быстрый").tag(true); Text("Как выдаёт сайт").tag(false) }.pickerStyle(.segmented)
-                    .onChange(of: auto) { Servers.auto = auto }
-                Text(auto ? "Видео и загрузки идут через самый быстрый из проверенных серверов. Если он не ответит, плеер возьмёт ссылку сайта." : "Каждую серию сайт отдаёт со случайного сервера.")
-                    .font(.system(size: 13)).foregroundStyle(Night.muted)
-                ForEach(Array(shown.enumerated()), id: \.element.id) { i, r in
-                    HStack {
-                        Text("Сервер \(i + 1)").font(.system(size: 15, weight: .medium).monospacedDigit()).foregroundStyle(Night.text)
-                        if r.host == Servers.best { Text("лучший").font(.system(size: 11, weight: .heavy)).foregroundStyle(Night.onAccent).padding(.horizontal, 6).padding(.vertical, 2).background(Night.scoreHigh, in: Capsule()) }
-                        Spacer()
-                        Text(r.mbit.map { String(format: "%.0f Мбит/с", $0) } ?? r.error ?? "—").font(.system(size: 14).monospacedDigit())
-                            .foregroundStyle(r.mbit == nil ? Night.danger : r.mbit! >= 25 ? Night.scoreHigh : r.mbit! >= 8 ? Night.scoreMid : Night.scoreLow)
-                    }
-                }
-                if testing { ProgressView().frame(maxWidth: .infinity) }
-                if !message.isEmpty { Text(message).font(.system(size: 13)).foregroundStyle(Night.danger) }
-                Button(testing ? "Проверяю…" : "Проверить серверы") { Task { await test() } }.buttonStyle(NightButtonStyle(selected: true)).disabled(testing)
-                if let t = Servers.tested, !testing { Text("Последняя проверка: \(t.formatted(.relative(presentation: .named)))").font(.system(size: 12)).foregroundStyle(Night.muted) }
-            }
         }
         .task { await store.refreshAccount() }
-    }
-    var shown: [ServerResult] {
-        if !results.isEmpty { return results }
-        let saved = Servers.results
-        return Servers.seen.map { ServerResult(host: $0, mbit: saved[$0], error: saved[$0] == nil ? "не проверен" : nil) }
     }
     @ViewBuilder var subscription: some View {
         switch store.premium {
@@ -115,11 +99,5 @@ struct AccountPanel: View {
         VStack(alignment: .leading, spacing: 8, content: c).padding(14).frame(maxWidth: .infinity, alignment: .leading)
             .background(Night.panel, in: RoundedRectangle(cornerRadius: 14)).overlay(RoundedRectangle(cornerRadius: 14).stroke(Night.stroke))
     }
-    func test() async {
-        testing = true; message = ""; results = []
-        do { let sample = try await store.serverSample(); _ = await Servers.test(sample: sample) { r in results.append(r) } }
-        catch { message = error.localizedDescription }
-        if !results.isEmpty { results.sort { ($0.mbit ?? -1) > ($1.mbit ?? -1) } }
-        testing = false
-    }
+
 }

@@ -17,9 +17,9 @@ import java.util.concurrent.*;
 // Один экран-контейнер: вкладки снизу на телефоне и сверху на ТВ, внутри — стек экранов с «Назад».
 public class MainActivity extends Activity {
  // Цвета — роли из replica/design/tokens.json.
- static final int BG=0xff070b14,SURFACE=0xff172335,RAISED=0xd9202c3e,TEXT=0xfff2f5fb,MUTED=0xffa9afc2,ACCENT=0xffedf4ff,ON_ACCENT=0xff0f1a2a,
+ static final int BG=0xff040508,SURFACE=0xff11151d,RAISED=0xd91a1f29,TEXT=0xfff2f5fb,MUTED=0xffa9afc2,ACCENT=0xffedf4ff,ON_ACCENT=0xff0f1a2a,
   FRESH=0xffffcc80,SCORE_HIGH=0xff6fdc8c,SCORE_MID=0xffc9d1e0,SCORE_LOW=0xffff8a80,PROGRESS=0xff7fb2ff,DANGER=0xffff8a80,STROKE=0x22ffffff;
- static final String CARD_FIELDS="id,titles,posterUrl,posterUrlSmall,typeTitle,year,myAnimeListScore,season,genres,isHentai";
+ static final String CARD_FIELDS="id,titles,posterUrl,posterUrlSmall,typeTitle,year,myAnimeListScore,myAnimeListId,season,genres,isHentai";
  static final int[][] GENRES={{1,0},{2,0},{4,0},{8,0},{10,0},{22,0},{24,0},{36,0},{62,0},{7,0},{37,0},{23,0},{30,0},{18,0},{40,0},{41,0},{13,0},{19,0},{63,0},{76,0}};
  static final String[] GENRE_NAMES={"Экшен","Приключения","Комедия","Драма","Фэнтези","Романтика","Фантастика","Повседневность","Исекай","Детектив","Сверхъестественное","Школа","Спорт","Меха","Психологическое","Триллер","Исторический","Музыка","Ияшикей","Выживание"};
 
@@ -45,19 +45,30 @@ public class MainActivity extends Activity {
  ArrayList<JSONObject> episodes;
  int autoPlay=0,autoNextAfter=0;
  Runnable ticker;boolean active;
+ MangaUi manga;
+ boolean libraryManga,downloadsManga;
 
  @Override public void onCreate(Bundle b){
   super.onCreate(b);
   tv=getPackageManager().hasSystemFeature("android.software.leanback");
+  Shikimori.listener=this::shikiChanged;
   // Отладка: телефонная раскладка на приставке (проверка загрузок без телефона под рукой).
   if(getIntent().getBooleanExtra("development_phone_layout",false))tv=false;
   if(getIntent().getBooleanExtra("development_tv_layout",false))tv=true;
   Downloads.testUrl=getIntent().getStringExtra("development_download_url");
+  if(getIntent().getBooleanExtra("development_no_tv_sync",false))Sync.off=true;
   getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
   getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+  manga=new MangaUi(this);Manga.Comx.attach(this);
   shell();
   showTab(0);
   if(getIntent().getBooleanExtra("continue",false))continueWatching();
+  if(getIntent().getBooleanExtra("downloads",false))showTab(3);
+  // Отладка (только debug-сборка): две тестовые серии по ссылке development_download_url — проверка уведомления загрузок.
+  if((getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0&&Downloads.testUrl!=null&&getIntent().getBooleanExtra("development_enqueue",false)){askNotifications();io.execute(()->{try{
+   JSONObject series=new JSONObject().put("id",900000).put("title","Тестовое аниме"),tr=new JSONObject().put("id",1).put("type","voiceRu");
+   for(int n=1;n<=2;n++){Downloads.enqueue(this,series,new JSONObject().put("id",900000+n).put("episodeFull",n+" серия").put("episodeInt",""+n),tr);DownloadService.ensure(this);}
+   runOnUiThread(()->{DownloadService.ensure(this);showTab(3);});}catch(Exception e){runOnUiThread(()->alert(e.getMessage()));}});}
   io.execute(()->{State.checkNewEpisodes(this,3600*1000L);runOnUiThread(this::refreshIfHome);});
   if(getIntent().getBooleanExtra("development_test_subscriber",false))replaySubscriber();
   if(getIntent().hasExtra("development_test_video")){Intent test=new Intent(this,PlayerActivity.class);test.putStringArrayListExtra("urls",new ArrayList<>(Arrays.asList(getIntent().getStringExtra("development_test_video"))));test.putStringArrayListExtra("labels",new ArrayList<>(Arrays.asList("Тест ASS")));test.putExtra("subtitles",getIntent().getStringExtra("development_test_subtitles"));test.putExtra("title","Проверка русских ASS-субтитров");test.putExtra("key","subtitle-test-"+System.nanoTime());test.putExtra("hasNext",true);startActivity(test);}
@@ -93,11 +104,29 @@ public class MainActivity extends Activity {
  }
  int scoreColor(double s){return s>=8?SCORE_HIGH:s>=6.5?SCORE_MID:SCORE_LOW;}
  String scoreText(JSONObject item){double s=item.optDouble("myAnimeListScore",0);return s>0?String.format(Locale.forLanguageTag("ru"),"★ %.1f",s):"";}
- CharSequence meta(JSONObject item,String rest){
-  android.text.SpannableStringBuilder b=new android.text.SpannableStringBuilder();String score=scoreText(item);
-  if(!score.isEmpty()){b.append(score);b.setSpan(new android.text.style.ForegroundColorSpan(scoreColor(item.optDouble("myAnimeListScore"))),0,score.length(),33);b.setSpan(new android.text.style.StyleSpan(Typeface.BOLD),0,score.length(),33);b.append("  ");}
-  b.append(rest);return b;
+ CharSequence meta(JSONObject item,String rest){return scores(item,rest,true);}
+ // Две оценки: Anime 365 (MyAnimeList) и Шикимори. Год или тип — только если оценок меньше двух, иначе строка не влезает в карточку.
+ CharSequence scores(JSONObject item,String rest,boolean always){
+  android.text.SpannableStringBuilder b=new android.text.SpannableStringBuilder();int n=0;
+  double a=item.optDouble("myAnimeListScore",0),s=Shikimori.score(item.optInt("myAnimeListId"));
+  if(a>0){scorePart(b,"365",a);n++;}
+  if(s>0){scorePart(b,"Shiki",s);n++;}
+  if((always||n<2)&&rest!=null&&!rest.isEmpty()){if(b.length()>0)b.append("  ");b.append(rest);}
+  return b;
  }
+ void scorePart(android.text.SpannableStringBuilder b,String label,double v){
+  if(b.length()>0)b.append("  ");int st=b.length();b.append(label).append(' ');
+  b.setSpan(new android.text.style.RelativeSizeSpan(.78f),st,b.length(),33);b.setSpan(new android.text.style.StyleSpan(Typeface.BOLD),st,b.length(),33);
+  int vs=b.length();b.append(String.format(Locale.forLanguageTag("ru"),"%.1f",v));
+  b.setSpan(new android.text.style.ForegroundColorSpan(scoreColor(v)),vs,b.length(),33);b.setSpan(new android.text.style.StyleSpan(Typeface.BOLD),vs,b.length(),33);
+ }
+ // Оценки Шикимори и 4K приходят позже карточек: надписи и значки перерисовываются по сигналу Shikimori.listener.
+ // Записи старых экранов отбрасываются по номеру поколения, сигналы склеиваются в один раз за 300 мс.
+ final ArrayList<Object[]> live=new ArrayList<>();
+ void live(View v,Runnable paint){live.add(new Object[]{v,paint,generation});}
+ final Runnable shikiPaint=()->{for(java.util.Iterator<Object[]> i=live.iterator();i.hasNext();){Object[] o=i.next();if((int)o[2]!=generation){i.remove();continue;}((Runnable)o[1]).run();}};
+ void shikiChanged(){handler.removeCallbacks(shikiPaint);handler.postDelayed(shikiPaint,300);}
+ TextView uhdBadge(int id){TextView u=bold("4K",10,ON_ACCENT);u.setPadding(dp(5),dp(1),dp(5),dp(1));u.setBackground(bg(ACCENT,5));Runnable p=()->u.setVisibility(Shikimori.hasUhd(id)?View.VISIBLE:View.GONE);p.run();live(u,p);Shikimori.wantUhd(this,id);return u;}
  static String genresText(JSONObject item,int max){JSONArray g=item.optJSONArray("genres");StringBuilder s=new StringBuilder();if(g!=null)for(int i=0;i<Math.min(max,g.length());i++){if(s.length()>0)s.append(" · ");s.append(g.optJSONObject(i).optString("title"));}return s.toString();}
  static String description(JSONObject item){JSONArray d=item.optJSONArray("descriptions");if(d==null||d.length()==0)return "";return d.optJSONObject(0).optString("value").replaceAll("\\[[^\\]]*\\]","").trim();}
  View progressLine(float value){
@@ -125,7 +154,7 @@ public class MainActivity extends Activity {
   java.io.File dir=new java.io.File(getCacheDir(),"posters"),file=new java.io.File(dir,sha1(url));
   if(postersTrimmed.compareAndSet(false,true))trimPosters(dir);
   if(System.currentTimeMillis()-file.lastModified()<30L*24*3600*1000){Bitmap b=decodeFile(file,height);if(b!=null)return b;}
-  byte[] data;try{data=Api.download(url,4*1024*1024);}catch(Exception e){Bitmap old=decodeFile(file,height);if(old!=null)return old;throw e;}
+  byte[] data;try{data=Manga.download(url,4*1024*1024);}catch(Exception e){Bitmap old=decodeFile(file,height);if(old!=null)return old;throw e;}
   Bitmap b=decodePoster(data,height);
   // Пишем во временный файл и переименовываем: другой поток никогда не прочитает недописанный постер.
   if(b!=null)try{dir.mkdirs();java.io.File tmp=java.io.File.createTempFile("poster",".tmp",dir);try(java.io.FileOutputStream out=new java.io.FileOutputStream(tmp)){out.write(data);}if(!tmp.renameTo(file))tmp.delete();}catch(Exception ignored){}
@@ -150,9 +179,9 @@ public class MainActivity extends Activity {
  }
  // Элемент в фокусе увеличивается — родители не должны его обрезать, иначе края срезаются несимметрично.
  static void unclip(View v){for(android.view.ViewParent p=v.getParent();p instanceof ViewGroup;p=p.getParent()){ViewGroup g=(ViewGroup)p;g.setClipChildren(false);g.setClipToPadding(false);if(g instanceof ScrollView)break;}}
- View shade(){View v=new View(this);v.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0x33070b14,0xb3070b14,BG}));return v;}
+ View shade(){View v=new View(this);v.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0x33040508,0xb3040508,BG}));return v;}
 
- // Значки вкладок: дом, лупа, сердце, загрузка — простые линии в цвет подписи.
+ // Значки вкладок: дом, лупа, сердце, загрузка, книга — простые линии в цвет подписи.
  static final class TabIcon extends View{
   final int kind;final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);final Path path=new Path();
   TabIcon(Context c,int kind,int color){super(c);this.kind=kind;paint.setColor(color);paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(c.getResources().getDisplayMetrics().density*2);paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeJoin(Paint.Join.ROUND);}
@@ -161,6 +190,7 @@ public class MainActivity extends Activity {
    if(kind==0){path.moveTo(w*.15f,h*.45f);path.lineTo(w*.5f,h*.15f);path.lineTo(w*.85f,h*.45f);path.moveTo(w*.25f,h*.38f);path.lineTo(w*.25f,h*.85f);path.lineTo(w*.75f,h*.85f);path.lineTo(w*.75f,h*.38f);}
    else if(kind==1){c.drawCircle(w*.44f,h*.44f,w*.27f,paint);path.moveTo(w*.64f,h*.64f);path.lineTo(w*.85f,h*.85f);}
    else if(kind==2){path.moveTo(w*.5f,h*.82f);path.cubicTo(w*.05f,h*.5f,w*.1f,h*.12f,w*.5f,h*.3f);path.cubicTo(w*.9f,h*.12f,w*.95f,h*.5f,w*.5f,h*.82f);}
+   else if(kind==4){path.moveTo(w*.5f,h*.28f);path.cubicTo(w*.38f,h*.18f,w*.22f,h*.18f,w*.1f,h*.22f);path.lineTo(w*.1f,h*.8f);path.cubicTo(w*.22f,h*.76f,w*.38f,h*.76f,w*.5f,h*.86f);path.cubicTo(w*.62f,h*.76f,w*.78f,h*.76f,w*.9f,h*.8f);path.lineTo(w*.9f,h*.22f);path.cubicTo(w*.78f,h*.18f,w*.62f,h*.18f,w*.5f,h*.28f);path.lineTo(w*.5f,h*.86f);}
    else{path.moveTo(w*.5f,h*.15f);path.lineTo(w*.5f,h*.65f);path.moveTo(w*.3f,h*.47f);path.lineTo(w*.5f,h*.67f);path.lineTo(w*.7f,h*.47f);path.moveTo(w*.18f,h*.85f);path.lineTo(w*.82f,h*.85f);}
    c.drawPath(path,paint);
   }
@@ -168,7 +198,7 @@ public class MainActivity extends Activity {
 
  // ───────────── Каркас и навигация ─────────────
  void shell(){
-  LinearLayout root=column();root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0xff0e1626,0xff0a101c,BG}));
+  LinearLayout root=column();root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0xff080a10,0xff040508,0xff020203}));
   root.setOnApplyWindowInsetsListener((v,in)->{v.setPadding(0,in.getSystemWindowInsetTop(),0,in.getSystemWindowInsetBottom());return in;});
   tabs=row();
   content=new FrameLayout(this);
@@ -177,28 +207,31 @@ public class MainActivity extends Activity {
   setContentView(root);
   renderTabs();
  }
+ // Вкладки: id 0 — аниме, 1 — поиск аниме, 2 — «Моё», 3 — «Загрузки», 4 — манга.
  void renderTabs(){
   tabs.removeAllViews();
-  String[] names=tv?new String[]{"Главная","Поиск","Моё"}:new String[]{"Главная","Поиск","Моё","Загрузки"};
+  int[] ids=tv?new int[]{0,4,1,2}:new int[]{0,4,2,3};
+  String[] names=tv?new String[]{"Аниме","Манга","Поиск","Моё"}:new String[]{"Аниме","Манга","Моё","Загрузки"};
+  int shown=!tv&&tab==1?0:tab;
   if(tv){
-   TextView logo=bold("Yoru Anime",24,TEXT);tabs.addView(logo,new LinearLayout.LayoutParams(-2,-2));
+   TextView logo=bold("Yoru",24,TEXT);tabs.addView(logo,new LinearLayout.LayoutParams(-2,-2));
    View sp=new View(this);tabs.addView(sp,new LinearLayout.LayoutParams(dp(28),1));
-   for(int i=0;i<names.length;i++){int n=i;TextView t=chip(names[i],tab==i,()->showTab(n));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(42));lp.rightMargin=dp(10);tabs.addView(t,lp);}
+   for(int i=0;i<names.length;i++){int n=ids[i];TextView t=chip(names[i],tab==n,()->showTab(n));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(42));lp.rightMargin=dp(10);tabs.addView(t,lp);}
    tabs.addView(new View(this),new LinearLayout.LayoutParams(0,1,1));
    if(available!=null){Updater.Release r=available;TextView u=chip("↑  Обновить до "+r.version,true,()->offerUpdate(r));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(42));lp.rightMargin=dp(10);tabs.addView(u,lp);}
-   TextView acc=chip(Api.token(this).isEmpty()?"Войти":"Аккаунт",false,this::login);tabs.addView(acc,new LinearLayout.LayoutParams(-2,dp(42)));
+   TextView acc=chip("Аккаунты",false,()->push(manga::accounts));tabs.addView(acc,new LinearLayout.LayoutParams(-2,dp(42)));
    return;
   }
   for(int i=0;i<names.length;i++){
-   int n=i;LinearLayout t=column();t.setGravity(Gravity.CENTER);t.setClickable(true);t.setFocusable(true);t.setContentDescription(names[i]);
-   int color=tab==i?TEXT:0xff7d8496;
-   t.addView(new TabIcon(this,i,color),new LinearLayout.LayoutParams(dp(24),dp(24)));
+   int n=ids[i];LinearLayout t=column();t.setGravity(Gravity.CENTER);t.setClickable(true);t.setFocusable(true);t.setContentDescription(names[i]);
+   int color=shown==n?TEXT:0xff7d8496;
+   t.addView(new TabIcon(this,n,color),new LinearLayout.LayoutParams(dp(24),dp(24)));
    TextView label=text(names[i],11,color);label.setGravity(Gravity.CENTER);t.addView(label);
-   t.setOnClickListener(v->{if(tab==n&&stack.size()>1){stack.subList(1,stack.size()).clear();stack.get(0).scrollY=0;stack.get(0).show.run();}else showTab(n);});
+   t.setOnClickListener(v->{if(tab==n&&stack.size()>1){stack.subList(1,stack.size()).clear();stack.get(0).scrollY=0;generation++;stopTicker();stack.get(0).show.run();}else showTab(n);});
    tabs.addView(t,new LinearLayout.LayoutParams(0,-1,1));
   }
  }
- void showTab(int n){tab=n;stack.clear();renderTabs();push(n==0?this::homeScreen:n==1?this::searchScreen:n==2?this::libraryScreen:this::downloadsScreen);}
+ void showTab(int n){tab=n;stack.clear();renderTabs();push(n==0?this::homeScreen:n==1?this::searchScreen:n==2?this::libraryScreen:n==4?manga::home:this::downloadsScreen);}
  void push(Runnable screen){if(!stack.isEmpty()&&scroll!=null){Entry top=stack.get(stack.size()-1);top.scrollY=scroll.getScrollY();View f=getCurrentFocus();top.focusId=f==null?View.NO_ID:f.getId();}stack.add(new Entry(screen));generation++;stopTicker();screen.run();}
  void back(){if(stack.size()<=1){if(tab!=0){showTab(0);return;}finish();return;}stack.remove(stack.size()-1);generation++;stopTicker();Entry e=stack.get(stack.size()-1);e.show.run();restore(e);}
  void refresh(){if(stack.isEmpty())return;Entry e=stack.get(stack.size()-1);e.scrollY=scroll==null?0:scroll.getScrollY();View f=getCurrentFocus();e.focusId=f==null?View.NO_ID:f.getId();generation++;stopTicker();e.show.run();restore(e);}
@@ -234,14 +267,17 @@ public class MainActivity extends Activity {
   ImageView img=new ImageView(this);img.setScaleType(ImageView.ScaleType.CENTER_CROP);frame.addView(img,new FrameLayout.LayoutParams(-1,-1));
   poster(img,item.optString("posterUrlSmall"),item.optString("posterUrl"),(int)(width*1.5f));
   if(State.hasNew(this,item.optInt("id"))){TextView n=bold("НОВАЯ СЕРИЯ",9,ON_ACCENT);n.setPadding(dp(6),dp(2),dp(6),dp(2));n.setBackground(bg(FRESH,999));FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.START);lp.setMargins(dp(6),dp(6),0,0);frame.addView(n,lp);}
-  if(!tv&&hasDownload(item.optInt("id"))){TextView d=bold("↓",13,TEXT);d.setGravity(Gravity.CENTER);d.setBackground(bg(0xb3070b14,999));FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(dp(22),dp(22),Gravity.TOP|Gravity.END);lp.setMargins(0,dp(6),dp(6),0);frame.addView(d,lp);}
+  boolean dl=!tv&&hasDownload(item.optInt("id"));
+  if(dl){TextView d=bold("↓",13,TEXT);d.setGravity(Gravity.CENTER);d.setBackground(bg(0xb3040508,999));FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(dp(22),dp(22),Gravity.TOP|Gravity.END);lp.setMargins(0,dp(6),dp(6),0);frame.addView(d,lp);}
+  if(item.optInt("id")>0){FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.END);lp.setMargins(0,dp(9),dp(dl?32:6),0);frame.addView(uhdBadge(item.optInt("id")),lp);}
   if(progress>=0){FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(-1,dp(3),Gravity.BOTTOM);lp.setMargins(dp(8),0,dp(8),dp(8));frame.addView(progressLine(Math.max(.02f,progress)),lp);}
   View ring=new View(this);ring.setBackground(bg(0,12,2,0xffffffff));ring.setVisibility(View.INVISIBLE);frame.addView(ring,new FrameLayout.LayoutParams(-1,-1));
   c.addView(frame,new LinearLayout.LayoutParams(width,(int)(width*1.5f)));
   TextView name=bold(Api.title(item),13,TEXT);name.setMaxLines(2);name.setMinLines(2);name.setEllipsize(android.text.TextUtils.TruncateAt.END);name.setPadding(0,dp(5),0,0);
   c.addView(name,new LinearLayout.LayoutParams(width,-2));
   TextView m=text("",12,MUTED);m.setSingleLine(true);m.setEllipsize(android.text.TextUtils.TruncateAt.END);
-  m.setText(caption!=null?caption:meta(item,item.optInt("year")>0?""+item.optInt("year"):item.optString("typeTitle")));
+  if(caption!=null)m.setText(caption);
+  else{String rest=item.optInt("year")>0?""+item.optInt("year"):item.optString("typeTitle");m.setText(scores(item,rest,false));int mal=item.optInt("myAnimeListId");if(mal>0&&!Shikimori.known(mal)){Shikimori.want(this,mal);live(m,()->changeText(m,scores(item,rest,false)));}}
   c.addView(m,new LinearLayout.LayoutParams(width,-2));
   c.setOnFocusChangeListener((v,f)->{ring.setVisibility(f?View.VISIBLE:View.INVISIBLE);if(f&&tv)unclip(v);v.animate().scaleX(f&&tv?1.06f:1).scaleY(f&&tv?1.06f:1).setDuration(130).start();if(f&&tv)scrollIntoView(v);});
   c.setOnClickListener(v->openDetail(item,resume));
@@ -302,19 +338,20 @@ public class MainActivity extends Activity {
   LinearLayout body=page();
   if(!tv){
    LinearLayout top=row();top.setPadding(side(),dp(4),side(),dp(8));
-   top.addView(bold("Yoru Anime",24,TEXT),new LinearLayout.LayoutParams(0,-2,1));
-   Button acc=pill(Api.token(this).isEmpty()?"Войти":"Аккаунт",false,this::login);top.addView(acc);
+   top.addView(bold("Yoru",24,TEXT),new LinearLayout.LayoutParams(0,-2,1));
+   Button acc=pill("Аккаунты",false,()->push(manga::accounts));top.addView(acc);
    body.addView(top);
   }
   FrameLayout hero=new FrameLayout(this);body.addView(hero,new LinearLayout.LayoutParams(-1,-2));
   // Пока подборка грузится, держим место под баннер — чтобы полки ниже не прыгали.
-  if(!shelves.containsKey(airing().toString())){View skeleton=new View(this);skeleton.setBackground(bg(SURFACE,16));FrameLayout.LayoutParams sk=tv?new FrameLayout.LayoutParams(dp(170),dp(255),Gravity.START|Gravity.CENTER_VERTICAL):new FrameLayout.LayoutParams(dp(196),dp(294),Gravity.CENTER);if(tv)sk.leftMargin=side();FrameLayout box=new FrameLayout(this);box.addView(skeleton,sk);hero.addView(box,new FrameLayout.LayoutParams(-1,dp(tv?300:540)));}
+  if(tv&&!shelves.containsKey(airing().toString())){View skeleton=new View(this);skeleton.setBackground(bg(SURFACE,16));FrameLayout.LayoutParams sk=tv?new FrameLayout.LayoutParams(dp(170),dp(255),Gravity.START|Gravity.CENTER_VERTICAL):new FrameLayout.LayoutParams(dp(196),dp(294),Gravity.CENTER);if(tv)sk.leftMargin=side();FrameLayout box=new FrameLayout(this);box.addView(skeleton,sk);hero.addView(box,new FrameLayout.LayoutParams(-1,dp(tv?300:540)));}
   int gen=generation;
   loadShelf(airing(),a->{if(gen!=generation)return;hero(hero,a);});
   LinearLayout links=row();links.setPadding(side(),dp(tv?4:14),side(),dp(18));
   links.addView(pill("Расписание",false,()->push(this::scheduleScreen)));
   View sp=new View(this);links.addView(sp,new LinearLayout.LayoutParams(dp(10),1));
   links.addView(pill("Онгоинги",false,()->push(()->gridScreen("Сейчас выходят",airing()))));
+  if(!tv){links.addView(new View(this),new LinearLayout.LayoutParams(dp(10),1));links.addView(pill("Поиск",false,()->showTab(1)));}
   body.addView(links);
   // «Продолжить просмотр» — как у Netflix: постер с полоской прогресса, нажатие сразу запускает серию.
   JSONArray history=State.list(this,"history");
@@ -353,6 +390,7 @@ public class MainActivity extends Activity {
    if(!tv){r.addView(new View(this),new LinearLayout.LayoutParams(dp(10),1));r.addView(pill("Мои загрузки",false,()->showTab(3)));}
    box.addView(r);hero.addView(box);if(tv)retry.post(retry::requestFocus);return;
   }
+  if(!tv)return; // на телефоне баннера нет — только сообщение об ошибке выше
   JSONObject item=a.optJSONObject(Math.min(heroPick,a.length()-1));
   boolean started=State.episodes(this).getInt("last-"+item.optInt("id"),0)!=0;
   int height=dp(tv?300:540);
@@ -408,25 +446,28 @@ public class MainActivity extends Activity {
  }
  void searchScreen(){
   LinearLayout body=page();body.addView(header("Поиск",false));gap(body,8);
-  EditText search=new EditText(this);search.setId(View.generateViewId());search.setTextSize(17);search.setSingleLine(true);search.setTextColor(TEXT);search.setHintTextColor(MUTED);search.setHint("Название аниме");
+  EditText search=new EditText(this);search.setId(View.generateViewId());search.setTextSize(17);search.setSingleLine(true);search.setTextColor(TEXT);search.setHintTextColor(MUTED);search.setHint("Аниме, манга, комиксы");
   search.setBackground(bg(RAISED,14,1,STROKE));search.setPadding(dp(16),0,dp(16),0);search.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
   if(tv){search.setShowSoftInputOnFocus(false);search.setOnClickListener(v->openKeyboard(search));search.setOnKeyListener((v,k,e)->{if(k==KeyEvent.KEYCODE_DPAD_CENTER||k==KeyEvent.KEYCODE_ENTER){if(e.getAction()==KeyEvent.ACTION_UP)openKeyboard(search);return true;}return false;});
    search.setOnFocusChangeListener((v,f)->search.setBackground(bg(RAISED,14,f?2:1,f?0xffffffff:STROKE)));}
   LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,dp(52));sp.setMargins(side(),0,side(),dp(14));body.addView(search,sp);
   HorizontalScrollView chipsScroll=new HorizontalScrollView(this);chipsScroll.setHorizontalScrollBarEnabled(false);chipsScroll.setClipToPadding(false);
   LinearLayout chips=row();chips.setPadding(side(),dp(4),side(),dp(4));chipsScroll.addView(chips);body.addView(chipsScroll);
+  LinearLayout extra=column();body.addView(extra);
   TextView title=bold("Популярное сейчас",19,TEXT);title.setPadding(side(),dp(16),side(),dp(10));body.addView(title);
   Grid grid=new Grid(body);TextView status=text("",14,MUTED);status.setPadding(side(),dp(8),side(),0);body.addView(status);
   int[] genre={0};String[] query={""};int[] offset={0};boolean[] busy={false},end={false};int[] request={0};
   Runnable[] load=new Runnable[1];
   load[0]=()->{
+   if(offset[0]==0)searchExtras(extra,query[0],request[0]+1,request);
+   if(offset[0]==0&&Shikimori.link(query[0])!=null){++request[0];grid.clear();status.setText("");return;}
    Map<String,String> p=new LinkedHashMap<>();if(!query[0].isEmpty())p.put("query",query[0]);if(genre[0]!=0)p.put("genres",""+genre[0]);if(p.isEmpty())p.put("isAiring","1");
    boolean reset=offset[0]==0;if(busy[0]&&!reset||end[0]&&!reset)return;busy[0]=true;int start=offset[0],req=++request[0],gen=generation;
    if(reset){grid.clear();status.setText("Загрузка…");}
    io.execute(()->{try{JSONArray a=fetch(p,start,24);runOnUiThread(()->{if(gen!=generation||req!=request[0])return;for(int i=0;i<a.length();i++)grid.add(a.optJSONObject(i));offset[0]=start+24;end[0]=a.length()<24;busy[0]=false;status.setText(grid.count==0?"Ничего не нашлось. Попробуйте другое название или жанр.":"");});}
     catch(Exception e){runOnUiThread(()->{if(req!=request[0])return;busy[0]=false;status.setText(e.getMessage());});}});
   };
-  Runnable reset=()->{offset[0]=0;end[0]=false;busy[0]=false;String g=genre[0]==0?"":GENRE_NAMES[indexOfGenre(genre[0])];title.setText(!query[0].isEmpty()?"Результаты"+(g.isEmpty()?"":" · "+g):g.isEmpty()?"Популярное сейчас":g);load[0].run();};
+  Runnable reset=()->{offset[0]=0;end[0]=false;busy[0]=false;String g=genre[0]==0?"":GENRE_NAMES[indexOfGenre(genre[0])];title.setText(!query[0].isEmpty()?"Аниме"+(g.isEmpty()?"":" · "+g):g.isEmpty()?"Популярное сейчас":g);title.setVisibility(Shikimori.link(query[0])!=null?View.GONE:View.VISIBLE);load[0].run();};
   Runnable[] drawChips=new Runnable[1];
   drawChips[0]=()->{chips.removeAllViews();for(int i=0;i<GENRES.length;i++){int id=GENRES[i][0];TextView c=chip(GENRE_NAMES[i],genre[0]==id,()->{genre[0]=genre[0]==id?0:id;drawChips[0].run();reset.run();});LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(38));lp.rightMargin=dp(8);chips.addView(c,lp);}};
   drawChips[0].run();
@@ -438,12 +479,51 @@ public class MainActivity extends Activity {
   if(tv)search.post(search::requestFocus);
  }
  static int indexOfGenre(int id){for(int i=0;i<GENRES.length;i++)if(GENRES[i][0]==id)return i;return 0;}
+ // Общий поиск: под строкой — манга MangaLib и комиксы Com-X полками и поиск на Шикимори. Ссылка Шикимори сразу открывает тайтл.
+ // req — номер запроса аниме: ответ устаревшего запроса (пользователь печатает дальше) не рисуется.
+ void searchExtras(LinearLayout extra,String q,int req,int[] request){
+  extra.removeAllViews();if(q.isEmpty())return;int gen=generation;
+  int[] link=Shikimori.link(q);
+  if(link!=null){
+   TextView note=text("Открываю ссылку Шикимори…",14,MUTED);note.setPadding(side(),dp(8),side(),dp(8));extra.addView(note);
+   io.execute(()->{String fail=null;try{
+     if(link[0]==1){JSONArray a=fetch(Api.params("myAnimeListId",""+link[1]),0,1);
+      if(a.length()>0){JSONObject it=a.optJSONObject(0);runOnUiThread(()->{if(gen==generation&&request[0]==req){note.setText("");openDetail(it,false);}});return;}
+      String[] n=Shikimori.info("animes",link[1]);fail=n==null?"Шикимори не ответил":"На Anime 365 нет «"+(n[0].isEmpty()?n[1]:n[0])+"»";}
+     else{Object[] r=Shikimori.resolveManga(this,link[1]);
+      if(r!=null&&r[0]!=null){JSONObject m=(JSONObject)r[0];runOnUiThread(()->{if(gen==generation&&request[0]==req){note.setText("");manga.open(m);}});return;}
+      fail=r==null?"Шикимори не ответил":"Не нашлось на MangaLib и Com-X: «"+r[1]+"»";}
+    }catch(Exception e){fail=e.getMessage();}
+    String f=fail;runOnUiThread(()->{if(gen==generation&&request[0]==req)note.setText(f);});});
+   return;
+  }
+  for(String src:new String[]{Manga.LIB,Manga.COMX}){
+   LinearLayout box=column();box.setVisibility(View.GONE);extra.addView(box);
+   TextView t=bold(Manga.LIB.equals(src)?"Манга · MangaLib":"Комиксы · Com-X",19,TEXT);t.setPadding(side(),dp(16),side(),dp(10));box.addView(t);
+   HorizontalScrollView hs=new HorizontalScrollView(this);hs.setHorizontalScrollBarEnabled(false);hs.setClipToPadding(false);hs.setClipChildren(false);
+   LinearLayout items=row();items.setClipChildren(false);items.setPadding(side(),0,side(),0);hs.addView(items);box.addView(hs);
+   io.execute(()->{try{List<JSONObject> list=Manga.search(this,src,q,1).items;runOnUiThread(()->{if(gen!=generation||request[0]!=req||list.isEmpty())return;
+     for(int i=0;i<Math.min(15,list.size());i++){JSONObject m=list.get(i);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,-2);lp.rightMargin=dp(12);items.addView(manga.card(m,posterWidth(),null,()->manga.open(m)),lp);}
+     box.setVisibility(View.VISIBLE);});}catch(Exception ignored){}});
+  }
+  if(!tv){TextView s=bold("Найти «"+q+"» на Шикимори ↗",14,ACCENT);s.setPadding(side(),dp(10),side(),dp(4));s.setOnClickListener(v->{try{startActivity(new Intent(Intent.ACTION_VIEW,android.net.Uri.parse(Shikimori.search(q))));}catch(Exception e){toast("Не удалось открыть браузер");}});extra.addView(s);}
+ }
  void openKeyboard(EditText e){e.requestFocus();((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(e,InputMethodManager.SHOW_IMPLICIT);}
 
  // ───────────── Моё ─────────────
+ interface Choice{void run(boolean manga);}
+ // Переключатель «Аниме / Манга» вверху «Моё» и «Загрузок».
+ void kinds(LinearLayout body,boolean selected,Choice pick){
+  LinearLayout seg=row();seg.setPadding(side(),0,side(),dp(10));
+  String[] names={"Аниме","Манга"};
+  for(int i=0;i<2;i++){boolean m=i==1;TextView c=chip(names[i],selected==m,()->{if(selected!=m)pick.run(m);});LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(40));lp.rightMargin=dp(8);seg.addView(c,lp);}
+  body.addView(seg);
+ }
  int librarySection=0;
  void libraryScreen(){
   LinearLayout body=page();body.addView(header("Моё",false));gap(body,8);
+  kinds(body,libraryManga,m->{libraryManga=m;refresh();});
+  if(libraryManga){manga.library(body);return;}
   LinearLayout seg=row();seg.setPadding(side(),0,side(),dp(16));
   String[] names={"Мой список","История"};
   for(int i=0;i<2;i++){int n=i;TextView c=chip(names[i],librarySection==i,()->{librarySection=n;refresh();});LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(40));lp.rightMargin=dp(8);seg.addView(c,lp);}
@@ -480,7 +560,7 @@ public class MainActivity extends Activity {
   }catch(Exception e){runOnUiThread(()->status.setText(e.getMessage()));}});
  }
  View listRow(JSONObject item,String caption,Runnable click){
-  LinearLayout r=row();r.setId(View.generateViewId());r.setPadding(dp(10),dp(8),dp(10),dp(8));r.setFocusable(true);r.setDefaultFocusHighlightEnabled(false);r.setClickable(true);r.setBackground(bg(0x99172335,14));
+  LinearLayout r=row();r.setId(View.generateViewId());r.setPadding(dp(10),dp(8),dp(10),dp(8));r.setFocusable(true);r.setDefaultFocusHighlightEnabled(false);r.setClickable(true);r.setBackground(bg(0x9911151d,14));
   ImageView img=new ImageView(this);img.setScaleType(ImageView.ScaleType.CENTER_CROP);img.setBackground(bg(SURFACE,8));img.setClipToOutline(true);poster(img,item.optString("posterUrlSmall"),dp(70));
   r.addView(img,new LinearLayout.LayoutParams(dp(46),dp(69)));
   LinearLayout col=column();col.setPadding(dp(12),0,dp(8),0);
@@ -488,7 +568,7 @@ public class MainActivity extends Activity {
   col.addView(text(caption,13,State.hasNew(this,item.optInt("id"))?FRESH:MUTED));
   r.addView(col,new LinearLayout.LayoutParams(0,-2,1));
   TextView s=bold(scoreText(item),13,scoreColor(item.optDouble("myAnimeListScore")));r.addView(s);
-  r.setOnFocusChangeListener((v,f)->{r.setBackground(f?bg(0xff2a3a52,14,2,0xffffffff):bg(0x99172335,14));if(f&&tv)scrollIntoView(v);});
+  r.setOnFocusChangeListener((v,f)->{r.setBackground(f?bg(0xff222a38,14,2,0xffffffff):bg(0x9911151d,14));if(f&&tv)scrollIntoView(v);});
   r.setOnClickListener(v->click.run());
   LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(side(),0,side(),dp(8));r.setLayoutParams(lp);
   return r;
@@ -498,8 +578,43 @@ public class MainActivity extends Activity {
  // «Продолжить» срабатывает один раз — при открытии, а не при каждом возврате из плеера.
  boolean autoResume;
  void openDetail(JSONObject item,boolean resume){autoResume=resume;push(()->detailScreen(item));}
+ void toast(String s){Toast.makeText(this,s,Toast.LENGTH_SHORT).show();}
+ TextView scoreBox(String label,double v){
+  android.text.SpannableStringBuilder b=new android.text.SpannableStringBuilder(String.format(Locale.forLanguageTag("ru"),"%.2f",v));
+  b.setSpan(new android.text.style.ForegroundColorSpan(scoreColor(v)),0,b.length(),33);b.setSpan(new android.text.style.RelativeSizeSpan(1.7f),0,b.length(),33);b.setSpan(new android.text.style.StyleSpan(Typeface.BOLD),0,b.length(),33);
+  b.append("\n").append(label);
+  TextView t=text("",10,MUTED);t.setText(b);t.setLineSpacing(0,.95f);t.setPadding(dp(10),dp(5),dp(10),dp(6));t.setBackground(bg(RAISED,10));
+  LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,-2);lp.rightMargin=dp(8);t.setLayoutParams(lp);return t;
+ }
+ // Ссылка на Шикимори и, после входа, статус и оценка в списке пользователя.
+ LinearLayout shikiRow(JSONObject item){
+  LinearLayout r=row();r.setPadding(side(),dp(10),side(),0);
+  if(!tv){Button open=pill("Открыть на Шикимори ↗",false,()->{try{startActivity(new Intent(Intent.ACTION_VIEW,android.net.Uri.parse(Shikimori.url(item))));}catch(Exception e){toast("Не удалось открыть браузер");}});r.addView(open,new LinearLayout.LayoutParams(-2,dp(40)));}
+  if(Shikimori.signedIn(this)&&item.optInt("myAnimeListId")>0){
+   if(!tv)r.addView(new View(this),new LinearLayout.LayoutParams(dp(8),1));
+   Button mine=pill(rateTitle(item),false,null);mine.setOnClickListener(v->rateDialog(item,mine));r.addView(mine,new LinearLayout.LayoutParams(-2,dp(40)));
+  }
+  return r;
+ }
+ String rateTitle(JSONObject item){Shikimori.Rate x=Shikimori.rate(this,item);if(x==null)return "＋  В список Шикимори";return "Шикимори · "+Shikimori.statusTitle(x.status)+(x.score>0?" · ★ "+x.score:"");}
+ int watchedCount(){int n=0;if(episodes!=null)for(JSONObject e:episodes)if(State.episodes(this).getBoolean("done-"+e.optInt("id"),false))n++;return n;}
+ void rateDialog(JSONObject item,Button button){
+  ArrayList<String> names=new ArrayList<>();for(String[] s:Shikimori.STATUSES)names.add(s[1]);names.add("Поставить оценку…");
+  new AlertDialog.Builder(this).setTitle("Список Шикимори").setItems(names.toArray(new String[0]),(d,n)->{
+   if(n<Shikimori.STATUSES.length){String st=Shikimori.STATUSES[n][0];shikiWrite(button,item,()->Shikimori.setStatus(this,item,st));return;}
+   String[] marks=new String[11];marks[0]="Без оценки";for(int i=1;i<=10;i++)marks[i]="★ "+i;
+   int watched=watchedCount();
+   new AlertDialog.Builder(this).setTitle("Оценка").setItems(marks,(d2,m)->shikiWrite(button,item,()->Shikimori.setScore(this,item,m,watched))).setNegativeButton("Отмена",null).show();
+  }).setNegativeButton("Закрыть",null).show();
+ }
+ interface Job{void run()throws Exception;}
+ void shikiWrite(Button button,JSONObject item,Job job){
+  button.setEnabled(false);button.setText("Сохраняю…");
+  Shikimori.work.execute(()->{String err=null;try{job.run();}catch(Exception e){err=e.getMessage();}String m=err;
+   runOnUiThread(()->{button.setEnabled(true);button.setText(rateTitle(item));if(m!=null)toast(m);});});
+ }
  void detailScreen(JSONObject item){
-  boolean resume=autoResume;autoResume=false;
+  boolean resume=autoResume;autoResume=false;int gen0=generation;
   LinearLayout body=page();current=item;episodes=null;
   int top=tv?dp(250):dp(300);
   FrameLayout head=new FrameLayout(this);body.addView(head,new LinearLayout.LayoutParams(-1,top));
@@ -510,8 +625,14 @@ public class MainActivity extends Activity {
   info.addView(cover,new LinearLayout.LayoutParams(dp(tv?150:124),dp(tv?225:186)));
   LinearLayout texts=column();texts.setPadding(dp(16),0,0,0);
   TextView title=bold(Api.title(item),tv?28:22,TEXT);title.setMaxLines(4);title.setEllipsize(android.text.TextUtils.TruncateAt.END);texts.addView(title);gap(texts,6);
-  TextView metaLine=text("",13,MUTED);metaLine.setText(meta(item,join(item.optString("typeTitle"),item.optInt("year")>0?""+item.optInt("year"):"")));texts.addView(metaLine);
+  TextView metaLine=text("",13,MUTED);metaLine.setText(join(item.optString("typeTitle"),item.optInt("year")>0?""+item.optInt("year"):""));texts.addView(metaLine);
   TextView season=text(item.optString("season"),13,MUTED);texts.addView(season);
+  gap(texts,8);LinearLayout scoreRow=row();scoreRow.setGravity(Gravity.CENTER_VERTICAL);texts.addView(scoreRow);
+  JSONObject[] full={item};
+  Runnable paintScores=()->{scoreRow.removeAllViews();double a=full[0].optDouble("myAnimeListScore",0),s=Shikimori.score(full[0].optInt("myAnimeListId"));
+   if(a>0)scoreRow.addView(scoreBox("Anime 365",a));if(s>0)scoreRow.addView(scoreBox("Shikimori",s));
+   if(Shikimori.hasUhd(item.optInt("id"))){TextView u=bold("4K",12,ON_ACCENT);u.setPadding(dp(8),dp(3),dp(8),dp(3));u.setBackground(bg(ACCENT,6));scoreRow.addView(u);}};
+  paintScores.run();live(scoreRow,paintScores);Shikimori.wantUhd(this,item.optInt("id"));if(item.optInt("myAnimeListId")>0)Shikimori.want(this,item.optInt("myAnimeListId"));
   info.addView(texts,new LinearLayout.LayoutParams(0,-2,1));
   if(!tv){Button back=pill("‹",false,this::back);back.setTextSize(22);back.setContentDescription("Назад");FrameLayout.LayoutParams bp=new FrameLayout.LayoutParams(dp(46),dp(46));bp.setMargins(side(),dp(4),0,0);head.addView(info,new FrameLayout.LayoutParams(-1,top));head.addView(back,bp);}
   else head.addView(info,new FrameLayout.LayoutParams(-1,top));
@@ -519,6 +640,7 @@ public class MainActivity extends Activity {
   LinearLayout actions=column();actions.setPadding(side(),dp(12),side(),0);body.addView(actions);
   Button play=pill("Загрузка серий…",true,()->{});play.setLayoutParams(new LinearLayout.LayoutParams(tv?-2:-1,dp(tv?50:48)));actions.addView(play);
   FrameLayout playProgress=new FrameLayout(this);actions.addView(playProgress,new LinearLayout.LayoutParams(-1,-2));
+  trRow=row();trRow.setVisibility(View.GONE);
   if(!tv)gap(actions,10);
   // На ТВ «Мой список» стоит рядом со «Смотреть», на телефоне — отдельной строкой со «Скачать все».
   LinearLayout second=row();
@@ -528,10 +650,16 @@ public class MainActivity extends Activity {
   second.addView(fav,new LinearLayout.LayoutParams(tv?-2:0,dp(tv?50:46),tv?0:1));
   Button all=null;
   if(!tv){second.addView(new View(this),new LinearLayout.LayoutParams(dp(10),1));all=pill("↓  Скачать все",false,()->{});second.addView(all,new LinearLayout.LayoutParams(0,dp(46),1));}
+  trRow.setPadding(side(),dp(10),side(),0);body.addView(trRow);
   TextView status=text("",13,MUTED);status.setPadding(side(),dp(10),side(),0);body.addView(status);
   TextView about=text(description(item),14,0xe6f2f5fb);about.setLineSpacing(0,1.15f);about.setPadding(side(),dp(10),side(),0);about.setMaxLines(3);about.setEllipsize(android.text.TextUtils.TruncateAt.END);body.addView(about);
   TextView moreText=bold("Ещё",14,MUTED);moreText.setPadding(side(),dp(4),side(),dp(4));moreText.setVisibility(View.GONE);body.addView(moreText);
   moreText.setOnClickListener(v->{boolean open=about.getMaxLines()==3;about.setMaxLines(open?Integer.MAX_VALUE:3);moreText.setText(open?"Свернуть":"Ещё");});
+  // Описание с Шикимори аккуратнее: если оно есть, заменяет описание Anime 365.
+  String[] shikiAbout={null};
+  Runnable fitAbout=()->about.post(()->moreText.setVisibility(about.getLayout()!=null&&about.getLayout().getEllipsisCount(Math.max(0,about.getLineCount()-1))>0?View.VISIBLE:View.GONE));
+  if(item.optInt("myAnimeListId")>0)io.execute(()->{String t=Shikimori.text(this,item.optInt("myAnimeListId"));if(!t.isEmpty())runOnUiThread(()->{if(gen0==generation){shikiAbout[0]=t;about.setText(t);about.setVisibility(View.VISIBLE);fitAbout.run();}});});
+  body.addView(shikiRow(item));
   HorizontalScrollView gs=new HorizontalScrollView(this);gs.setHorizontalScrollBarEnabled(false);LinearLayout genreRow=row();genreRow.setPadding(side(),dp(10),side(),dp(4));gs.addView(genreRow);body.addView(gs);
   LinearLayout seasonBox=column();body.addView(seasonBox);
   TextView epTitle=bold("Серии",19,TEXT);epTitle.setPadding(side(),dp(18),side(),dp(8));body.addView(epTitle);
@@ -549,10 +677,14 @@ public class MainActivity extends Activity {
    es.sort(Comparator.<JSONObject>comparingInt(e->regular.contains(e.optInt("id"))?0:1).thenComparingDouble(e->e.optDouble("episodeInt")));
    runOnUiThread(()->{if(gen!=generation)return;
     episodes=es;State.seen(this,item.optInt("id"),es.size());
+    // Досмотренные до титров (≥ 90%), но не засчитанные серии — засчитываем.
+    JSONObject almost=null;for(JSONObject e:es){int eid=e.optInt("id");if(!State.episodes(this).getBoolean("done-"+eid,false)&&State.nearlyDone(this,eid)){State.episodes(this).edit().putBoolean("done-"+eid,true).apply();almost=e;}}
+    if(almost!=null)Shikimori.episodeFinished(this,item,almost);
     State.rememberEpisodes(this,item.optInt("id"),es);
-    String text=description(d);about.setText(text);about.setVisibility(text.isEmpty()?View.GONE:View.VISIBLE);
-    about.post(()->moreText.setVisibility(about.getLayout()!=null&&about.getLayout().getEllipsisCount(Math.max(0,about.getLineCount()-1))>0?View.VISIBLE:View.GONE));
-    metaLine.setText(meta(d,join(d.optString("typeTitle"),d.optInt("year")>0?""+d.optInt("year"):"")));season.setText(join(d.optString("season"),regular.isEmpty()?"":regular.size()+" эп."));
+    String text=shikiAbout[0]!=null?shikiAbout[0]:description(d);about.setText(text);about.setVisibility(text.isEmpty()?View.GONE:View.VISIBLE);
+    fitAbout.run();
+    full[0]=d;paintScores.run();if(item.optInt("myAnimeListId")<=0&&d.optInt("myAnimeListId")>0)Shikimori.want(this,d.optInt("myAnimeListId"));
+    metaLine.setText(join(d.optString("typeTitle"),d.optInt("year")>0?""+d.optInt("year"):""));season.setText(join(d.optString("season"),regular.isEmpty()?"":regular.size()+" эп."));
     JSONArray g=d.optJSONArray("genres");
     if(g!=null)for(int i=0;i<g.length();i++){JSONObject o=g.optJSONObject(i);TextView c=chip(o.optString("title"),false,()->push(()->gridScreen(o.optString("title"),Api.params("genres",""+o.optInt("id")))));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(36));lp.rightMargin=dp(8);genreRow.addView(c,lp);}
     epTitle.setText(regular.isEmpty()?"Серии":"Серии · "+regular.size());
@@ -589,11 +721,18 @@ public class MainActivity extends Activity {
   int last=State.episodes(this).getInt("last-"+item.optInt("id"),0);if(last!=e.optInt("id")&&!State.episodes(this).getBoolean("done-"+last,false))last=0;boolean done=State.episodes(this).getBoolean("done-"+e.optInt("id"),false);
   play.setText("▶  "+(last==0?"Смотреть · ":done?"Пересмотреть · ":"Продолжить · ")+e.optString("episodeFull"));
   play.setOnClickListener(v->startEpisode(item,e,false,status));
+  // Запомненный перевод: серии включаются с ним без вопроса, «Сменить» открывает список.
+  String remembered=State.episodes(this).getString("tr-"+item.optInt("id"),"");
+  if(trRow!=null){trRow.removeAllViews();trRow.setVisibility(remembered.isEmpty()?View.GONE:View.VISIBLE);
+   if(!remembered.isEmpty()){int bar=remembered.indexOf('|');String kind=bar<0?remembered:remembered.substring(0,bar),who=bar<0?"":remembered.substring(bar+1).replaceAll("^[\\s\\-–]+|[\\s\\-–]+$","");if(who.equals("Original"))who="";
+    TextView t=text("Перевод: "+kindName(kind)+(who.isEmpty()?"":" · "+who),13,MUTED);t.setMaxLines(2);t.setEllipsize(android.text.TextUtils.TruncateAt.END);trRow.setGravity(Gravity.CENTER_VERTICAL);trRow.addView(t,new LinearLayout.LayoutParams(0,-2,1));
+    TextView change=chip("Сменить",false,()->startEpisode(item,e,false,true,status));trRow.addView(change,new LinearLayout.LayoutParams(-2,dp(tv?40:36)));}}
   progress.removeAllViews();float f=State.fraction(this,e.optInt("id"));
   if(f>0&&f<1){FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(-1,dp(3));lp.setMargins(dp(30),dp(6),dp(30),0);progress.addView(progressLine(f),lp);}
   if(all!=null){int n=0;for(JSONObject x:episodes)if(Downloads.item(this,x.optInt("id"))!=null)n++;all.setText(n>0?"✓  Скачано "+n:"↓  Скачать все");
    all.setOnClickListener(v->{for(JSONObject x:episodes)if(Downloads.item(this,x.optInt("id"))==null){translations(item,x,false,true,true,status);return;}status.setText("Все серии уже скачаны — они во вкладке «Загрузки»");});}
  }
+ LinearLayout trRow;
  final Map<Integer,TextView> downloadButtons=new HashMap<>();
  void renderEpisodes(JSONObject item,LinearLayout list,TextView status){
   list.removeAllViews();downloadButtons.clear();
@@ -616,10 +755,11 @@ public class MainActivity extends Activity {
    if(f>0&&f<1){LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(dp(180),dp(3));lp.topMargin=dp(5);col.addView(progressLine(f),lp);}
    main.addView(col,new LinearLayout.LayoutParams(0,-2,1));
    main.setOnClickListener(v->startEpisode(item,e,false,status));
+   main.setOnLongClickListener(v->{startEpisode(item,e,false,true,status);return true;});
    r.addView(main,new LinearLayout.LayoutParams(0,-2,1));
    if(!tv){TextView dl=bold("",20,TEXT);dl.setGravity(Gravity.CENTER);dl.setClickable(true);dl.setFocusable(true);r.addView(dl,new LinearLayout.LayoutParams(dp(44),dp(44)));downloadButtons.put(id,dl);
     dl.setOnClickListener(v->{JSONObject d=Downloads.item(this,id);if(d==null)translations(item,e,false,true,false,status);else{Downloads.Status s=Downloads.status(this,d);if(s.state==Downloads.FAILED)retryDownload(id);else confirmRemove(id,()->renderEpisodes(item,list,status));}});}
-   Runnable paint=()->{r.setBackground(main.isFocused()&&tv?bg(0xff2a3a52,14,2,0xffffffff):bg(cur?SURFACE:0x73172335,14,1,cur?0x59edf4ff:STROKE));};paint.run();
+   Runnable paint=()->{r.setBackground(main.isFocused()&&tv?bg(0xff222a38,14,2,0xffffffff):bg(cur?SURFACE:0x7311151d,14,1,cur?0x59edf4ff:STROKE));};paint.run();
    main.setOnFocusChangeListener((v,fo)->{paint.run();if(fo&&tv)scrollIntoView(r);});
    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(side(),0,side(),dp(6));list.addView(r,lp);
    if(cur)focus=main;
@@ -643,14 +783,18 @@ public class MainActivity extends Activity {
   return busy;
  }
  void confirmRemove(int episode,Runnable after){new AlertDialog.Builder(this).setTitle("Удалить загрузку?").setMessage("Серия пропадёт с устройства, смотреть её можно будет онлайн.").setPositiveButton("Удалить",(d,w)->{Downloads.remove(this,episode);after.run();}).setNegativeButton("Отмена",null).show();}
- void retryDownload(int episode){io.execute(()->{try{Downloads.retry(this,episode);}catch(Exception e){runOnUiThread(()->alert(e.getMessage()));}runOnUiThread(this::refresh);});}
+ void retryDownload(int episode){io.execute(()->{try{Downloads.retry(this,episode);}catch(Exception e){runOnUiThread(()->alert(e.getMessage()));}runOnUiThread(()->{DownloadService.ensure(this);refresh();});});}
+ // Android 13+: уведомления нужно разрешить, иначе прогресс загрузок в шторке не виден. Спрашиваем один раз, при первой загрузке.
+ void askNotifications(){if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED&&!Downloads.prefs(this).getBoolean("asked-notifications",false)){Downloads.prefs(this).edit().putBoolean("asked-notifications",true).apply();requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},41);}}
  boolean hasDownload(int seriesId){JSONArray a=Downloads.items(this);for(int i=0;i<a.length();i++)if(a.optJSONObject(i).optInt("seriesId")==seriesId)return true;return false;}
 
  // Скачанная серия играет сразу из файла (как у Netflix), иначе — выбор перевода.
- void startEpisode(JSONObject item,JSONObject ep,boolean auto,TextView status){
+ // Выбранный раньше перевод включается сразу; choose — всё равно показать список («Сменить», долгое нажатие на серию).
+ void startEpisode(JSONObject item,JSONObject ep,boolean auto,TextView status){startEpisode(item,ep,auto,false,status);}
+ void startEpisode(JSONObject item,JSONObject ep,boolean auto,boolean choose,TextView status){
   JSONObject d=Downloads.item(this,ep.optInt("id"));
-  if(!tv&&d!=null&&Downloads.status(this,d).state==Downloads.DONE){playDownload(d,nextEpisode(ep.optInt("id"))!=null);return;}
-  translations(item,ep,auto,false,false,status);
+  if(!choose&&!tv&&d!=null&&Downloads.status(this,d).state==Downloads.DONE){playDownload(d,nextEpisode(ep.optInt("id"))!=null);return;}
+  translations(item,ep,auto,false,false,choose,status);
  }
  static String signature(JSONObject t){return t.optString("type")+"|"+t.optString("authorsSummary");}
  static String kindName(String kind){switch(kind){case "subRu":return "Русские субтитры";case "voiceRu":return "Русская озвучка";case "raw":return "Оригинал";case "subEn":return "Английские субтитры";case "subJa":return "Японские субтитры";case "subUk":return "Украинские субтитры";case "voiceEn":return "Английская озвучка";case "voiceJa":return "Японская озвучка";case "voiceUk":return "Украинская озвучка";default:return kind.startsWith("sub")?"Субтитры на другом языке":kind.startsWith("voice")?"Озвучка на другом языке":"Оригинал";}}
@@ -673,7 +817,8 @@ public class MainActivity extends Activity {
   out.sort(Comparator.<JSONObject>comparingInt(t->signature(t).equals(remembered)?-1:order.contains(t.optString("type"))?order.indexOf(t.optString("type")):3).thenComparingInt(t->isBd(t)?0:1).thenComparingInt(t->-t.optInt("priority")));
   return out;
  }
- void translations(JSONObject item,JSONObject ep,boolean auto,boolean download,boolean all,TextView status){
+ void translations(JSONObject item,JSONObject ep,boolean auto,boolean download,boolean all,TextView status){translations(item,ep,auto,download,all,false,status);}
+ void translations(JSONObject item,JSONObject ep,boolean auto,boolean download,boolean all,boolean choose,TextView status){
   status.setText(auto?ep.optString("episodeFull")+" — загрузка переводов…":"Загрузка переводов…");
   String remembered=State.episodes(this).getString("tr-"+item.optInt("id"),"");int gen=generation;
   io.execute(()->{try{
@@ -683,7 +828,7 @@ public class MainActivity extends Activity {
    if(ts.isEmpty()){ts.addAll(others);others.clear();}
    runOnUiThread(()->{if(gen!=generation)return;status.setText("");
     if(ts.isEmpty()){alert("Нет доступных переводов");return;}
-    if(auto&&!remembered.isEmpty()&&signature(ts.get(0)).equals(remembered)){play(item,ep,ts.get(0),status);return;}
+    if(!choose&&!download&&!remembered.isEmpty()&&signature(ts.get(0)).equals(remembered)){play(item,ep,ts.get(0),status);return;}
     String title=download?(all?"Скачать все серии":"Скачать · "+ep.optString("episodeFull")):ep.optString("episodeFull")+" — перевод";
     chooseTranslation(title,ts,others,remembered,t->{if(download)download(item,ep,t,all,status);else play(item,ep,t,status);});
    });
@@ -701,11 +846,11 @@ public class MainActivity extends Activity {
  }
  void download(JSONObject item,JSONObject ep,JSONObject tr,boolean all,TextView status){
   if(Api.token(this).isEmpty()&&Downloads.testUrl==null){login();return;}
-  status.setText("Ставлю в очередь: "+ep.optString("episodeFull")+"…");
+  status.setText("Ставлю в очередь: "+ep.optString("episodeFull")+"…");askNotifications();
   JSONObject card=cardOnly(item);ArrayList<JSONObject> rest=new ArrayList<>();
   if(all&&episodes!=null)for(JSONObject e:episodes)if(e!=ep&&Downloads.item(this,e.optInt("id"))==null)rest.add(e);
   io.execute(()->{try{
-   Downloads.enqueue(this,card,ep,tr);
+   Downloads.enqueue(this,card,ep,tr);DownloadService.ensure(this);
    // Скачивание не делает аниме «начатым» — запоминаем только перевод для следующих серий.
    State.episodes(this).edit().putString("tr-"+item.optInt("id"),signature(tr)).apply();
    // Остальные серии — тем же переводом: у каждой серии свои id переводов, совпадают команда и тип.
@@ -714,7 +859,7 @@ public class MainActivity extends Activity {
      for(int j=0;j<ts.length();j++)if(signature(ts.getJSONObject(j)).equals(signature(tr))){match=ts.getJSONObject(j);break;}
      if(match==null)for(int j=0;j<ts.length();j++)if(ts.getJSONObject(j).optString("type").equals(tr.optString("type"))){match=ts.getJSONObject(j);break;}
      if(match!=null)Downloads.enqueue(this,card,e,match);}catch(Exception ignored){}}
-   runOnUiThread(()->{status.setText("Загрузка идёт — прогресс в уведомлениях и во вкладке «Загрузки»");refresh();});
+   runOnUiThread(()->{status.setText("Загрузка идёт — прогресс в уведомлениях и во вкладке «Загрузки»");DownloadService.ensure(this);refresh();});
   }catch(Exception e){runOnUiThread(()->{status.setText(e.getMessage());alert(e.getMessage());});}});
  }
  // Запоминает начатую серию: по этим ключам работают «Продолжить», синхронизация и плитка на Night TV.
@@ -759,6 +904,8 @@ public class MainActivity extends Activity {
  // ───────────── Загрузки ─────────────
  void downloadsScreen(){
   LinearLayout body=page();body.addView(header("Загрузки",false));gap(body,6);
+  kinds(body,downloadsManga,m->{downloadsManga=m;refresh();});
+  if(downloadsManga){manga.downloads(body);return;}
   JSONArray a=Downloads.items(this);
   LinkedHashMap<Integer,ArrayList<JSONObject>> groups=new LinkedHashMap<>();
   ArrayList<JSONObject> all=new ArrayList<>();for(int i=0;i<a.length();i++)all.add(a.optJSONObject(i));
@@ -777,12 +924,14 @@ public class MainActivity extends Activity {
    JSONObject series=list.get(0).optJSONObject("series");long total=0;for(JSONObject o:list){java.io.File f=new java.io.File(Downloads.folder(this),o.optInt("id")+".mp4");total+=f.length();}
    body.addView(listRow(series,list.size()+" "+plural(list.size())+" · "+Downloads.size(total),()->openDetail(series,false)));
    for(JSONObject o:list){
-    LinearLayout r=row();r.setPadding(dp(14),dp(10),dp(10),dp(10));r.setBackground(bg(0x73172335,14,1,STROKE));r.setClickable(true);
+    LinearLayout r=row();r.setPadding(dp(14),dp(10),dp(10),dp(10));r.setBackground(bg(0x7311151d,14,1,STROKE));r.setClickable(true);
     TextView icon=bold("▶",15,TEXT);icon.setGravity(Gravity.CENTER);icon.setBackground(bg(RAISED,999));r.addView(icon,new LinearLayout.LayoutParams(dp(40),dp(40)));
     LinearLayout col=column();col.setPadding(dp(12),0,0,0);
     col.addView(bold(o.optJSONObject("episode").optString("episodeFull"),15,TEXT));
     TextView cap=text("",12,MUTED);cap.setSingleLine(true);cap.setEllipsize(android.text.TextUtils.TruncateAt.END);col.addView(cap);captions.put(o.optInt("id"),cap);cap.setTag(icon);
     r.addView(col,new LinearLayout.LayoutParams(0,-2,1));
+    // Удаление видно сразу: красная кнопка вместо скрытого долгого нажатия.
+    if(!tv){TextView del=bold("Удалить",13,0xffffffff);del.setGravity(Gravity.CENTER);del.setPadding(dp(12),0,dp(12),0);del.setBackground(bg(0xffd93a3a,999));del.setClickable(true);del.setContentDescription("Удалить загрузку");del.setOnClickListener(v->confirmRemove(o.optInt("id"),this::refresh));LinearLayout.LayoutParams dl=new LinearLayout.LayoutParams(-2,dp(32));dl.leftMargin=dp(8);r.addView(del,dl);}
     r.setOnClickListener(v->{Downloads.Status s=Downloads.status(this,o);if(s.state==Downloads.DONE){JSONObject next=null;for(JSONObject x:list)if(x.optJSONObject("episode").optDouble("episodeInt")>o.optJSONObject("episode").optDouble("episodeInt")&&Downloads.done(this,x.optInt("id"))){next=x;break;}playDownload(o,next!=null);}else if(s.state==Downloads.FAILED){retryDownload(o.optInt("id"));}});
     r.setOnLongClickListener(v->{confirmRemove(o.optInt("id"),this::refresh);return true;});
     LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(side()+dp(20),0,side(),dp(6));body.addView(r,lp);
@@ -795,7 +944,9 @@ public class MainActivity extends Activity {
   body.addView(settingRow("Качество",Downloads.quality(this)>=Downloads.BEST?"Наилучшее":Downloads.quality(this)+"p",()->{int q=Downloads.quality(this);p.edit().putInt("quality",q>=Downloads.BEST?1080:q==1080?720:q==720?480:Downloads.BEST).apply();refresh();}));
   body.addView(toggleRow("Только по Wi‑Fi",Downloads.wifiOnly(this),v->p.edit().putBoolean("wifi",v).apply()));
   body.addView(toggleRow("Удалять просмотренные",Downloads.autoDelete(this),v->p.edit().putBoolean("autodelete",v).apply()));
-  TextView foot=text("Занято "+Downloads.size(Downloads.used(this))+" · свободно "+Downloads.size(Downloads.free(this))+". Серии хранятся в папке приложения и удаляются вместе с ним. Долгое нажатие на серию — удалить.",12,MUTED);
+  TextView foot=text("Занято "+Downloads.size(Downloads.used(this))+" · свободно "+Downloads.size(Downloads.free(this))+". Серии хранятся в папке приложения и удаляются вместе с ним.",12,MUTED);
+  // Скорость каждой загрузки — по приросту байтов между обновлениями, сглаженная.
+  Map<Integer,double[]> rates=new HashMap<>();
   foot.setPadding(side(),dp(8),side(),0);body.addView(foot);
   java.util.function.BooleanSupplier update=()->{boolean busy=false;
    JSONArray items=Downloads.items(this);long[] ids=new long[items.length()];for(int i=0;i<ids.length;i++)ids[i]=items.optJSONObject(i).optLong("dm");
@@ -805,20 +956,22 @@ public class MainActivity extends Activity {
     String tr=trLabel(o.optJSONObject("translation"));
     if(s.state==Downloads.DONE){changeText(cap,Downloads.label(o.optInt("height"))+" · "+Downloads.size(s.total)+" · "+tr);cap.setTextColor(MUTED);changeText(icon,"▶");icon.setTextSize(15);icon.setTextColor(TEXT);}
     else if(s.state==Downloads.FAILED){changeText(cap,(s.error==null?"Ошибка":s.error)+" · нажмите, чтобы повторить");cap.setTextColor(DANGER);changeText(icon,"↻");icon.setTextSize(15);icon.setTextColor(DANGER);}
-    else{busy=true;changeText(cap,s.error!=null?s.error:s.total>0?(int)(s.progress()*100)+"% · "+Downloads.size(s.bytes)+" из "+Downloads.size(s.total):"Подготовка…");cap.setTextColor(PROGRESS);changeText(icon,s.total>0?(int)(s.progress()*100)+"":"…");icon.setTextSize(12);icon.setTextColor(PROGRESS);}
+    else{busy=true;long now=SystemClock.elapsedRealtime();double[] r=rates.get(o.optInt("id"));if(r==null)rates.put(o.optInt("id"),r=new double[]{s.bytes,now,0});else if(now-r[1]>=800){double v=Math.max(0,(s.bytes-r[0])*1000.0/(now-r[1]));r[2]=r[2]==0?v:r[2]*.7+v*.3;r[0]=s.bytes;r[1]=now;}
+     String speed=r[2]>1024?" · "+Downloads.size((long)r[2])+"/с":"";
+     changeText(cap,s.error!=null?s.error:s.total>0?(int)(s.progress()*100)+"% · "+Downloads.size(s.bytes)+" из "+Downloads.size(s.total)+speed:"Подготовка…");cap.setTextColor(PROGRESS);changeText(icon,s.total>0?(int)(s.progress()*100)+"":"…");icon.setTextSize(12);icon.setTextColor(PROGRESS);}
    }
    return busy;};
   update.getAsBoolean();startTicker(update);
  }
  static String plural(int n){return n%10==1&&n%100!=11?"серия":n%10>=2&&n%10<=4&&(n%100<12||n%100>14)?"серии":"серий";}
  View settingRow(String title,String value,Runnable click){
-  LinearLayout r=row();r.setPadding(dp(16),dp(14),dp(16),dp(14));r.setBackground(bg(0x99172335,14));r.setClickable(true);r.setFocusable(true);r.setDefaultFocusHighlightEnabled(false);
+  LinearLayout r=row();r.setPadding(dp(16),dp(14),dp(16),dp(14));r.setBackground(bg(0x9911151d,14));r.setClickable(true);r.setFocusable(true);r.setDefaultFocusHighlightEnabled(false);
   r.addView(text(title,16,TEXT),new LinearLayout.LayoutParams(0,-2,1));r.addView(bold(value+"  ⌄",15,MUTED));r.setOnClickListener(v->click.run());
   LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(side(),0,side(),dp(6));r.setLayoutParams(lp);return r;
  }
  interface Toggle{void set(boolean v);}
  View toggleRow(String title,boolean on,Toggle t){
-  LinearLayout r=row();r.setPadding(dp(16),dp(6),dp(10),dp(6));r.setBackground(bg(0x99172335,14));
+  LinearLayout r=row();r.setPadding(dp(16),dp(6),dp(10),dp(6));r.setBackground(bg(0x9911151d,14));
   r.addView(text(title,16,TEXT),new LinearLayout.LayoutParams(0,-2,1));Switch s=new Switch(this);s.setChecked(on);s.setOnCheckedChangeListener((v,c)->t.set(c));r.addView(s);
   LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(side(),0,side(),dp(6));r.setLayoutParams(lp);return r;
  }
@@ -852,21 +1005,19 @@ public class MainActivity extends Activity {
    catch(Exception e){runOnUiThread(()->{if(gen==generation)sub.setText(e.getMessage());});}});
 
   LinearLayout servers=panel(body);
-  servers.addView(bold("Сервер видео",18,TEXT));gap(servers,8);
-  SharedPreferences sp=Servers.prefs(this);
-  LinearLayout seg=row();String[] modes={"Самый быстрый","Как выдаёт сайт"};
-  TextView hint=text("",13,MUTED);
-  Runnable[] drawSeg=new Runnable[1];
-  drawSeg[0]=()->{seg.removeAllViews();for(int i=0;i<2;i++){boolean on=(i==0)==Servers.auto(this);int n=i;TextView c=chip(modes[i],on,()->{sp.edit().putBoolean("auto",n==0).apply();drawSeg[0].run();});LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(40));lp.rightMargin=dp(8);seg.addView(c,lp);}
-   hint.setText(Servers.auto(this)?"Видео и загрузки идут через самый быстрый из проверенных серверов. Если он не ответит, плеер возьмёт ссылку сайта.":"Каждую серию сайт отдаёт со случайного сервера.");};
-  drawSeg[0].run();servers.addView(seg);gap(servers,6);servers.addView(hint);gap(servers,10);
-  LinearLayout table=column();servers.addView(table);
+  servers.addView(bold("Сервер видео",18,TEXT));gap(servers,6);
+  servers.addView(text("Выбирается автоматически: видео и загрузки идут через самый быстрый сервер. Если он не ответит, плеер возьмёт ссылку сайта.",13,MUTED));gap(servers,10);
+  LinearLayout more=column();more.setVisibility(View.GONE);
+  Button toggle=pill("Подробнее",false,null);servers.addView(toggle);
+  toggle.setOnClickListener(v->{boolean show=more.getVisibility()!=View.VISIBLE;more.setVisibility(show?View.VISIBLE:View.GONE);toggle.setText(show?"Скрыть":"Подробнее");});
+  gap(servers,8);servers.addView(more);
+  LinearLayout table=column();more.addView(table);
   TextView note=text("",13,MUTED);
   Runnable drawSaved=()->{table.removeAllViews();Map<String,Double> m=Servers.speeds(this);for(String h:Servers.seen(this))table.addView(serverRow(table.getChildCount()+1,h,m.containsKey(h)?m.get(h):-1,m.containsKey(h)?null:"не проверен"));
    long t=Servers.tested(this);note.setText(t==0?"Серверы ещё не проверялись":"Последняя проверка: "+android.text.format.DateUtils.getRelativeTimeSpanString(t));};
   drawSaved.run();
-  gap(servers,8);
-  Button test=pill("Проверить серверы",true,null);servers.addView(test);gap(servers,6);servers.addView(note);
+  gap(more,8);
+  Button test=pill("Проверить серверы",true,null);more.addView(test);gap(more,6);more.addView(note);
   test.setOnClickListener(v->{test.setEnabled(false);test.setText("Проверяю…");table.removeAllViews();note.setText("");
    io.execute(()->{try{String sample=Servers.sample(this);List<Servers.Result> res=Servers.test(this,sample,r->runOnUiThread(()->{if(gen==generation)table.addView(serverRow(table.getChildCount()+1,r.host,r.mbit,r.error));}));
      runOnUiThread(()->{if(gen!=generation)return;test.setEnabled(true);test.setText("Проверить серверы");drawSaved.run();
@@ -877,12 +1028,12 @@ public class MainActivity extends Activity {
   upd.addView(text("Установлена версия "+Updater.current(this)+". Новые версии выходят на GitHub — приложение проверяет их само раз в несколько часов.",14,MUTED));gap(upd,10);
   upd.addView(pill("Проверить обновления",false,()->checkUpdates(true)));
   LinearLayout bottom=row();bottom.setPadding(side(),dp(12),side(),0);
-  bottom.addView(pill("Выйти",false,()->{try{Api.saveToken(this,"");}catch(Exception ignored){}showTab(0);}));
+  bottom.addView(pill("Выйти",false,()->YoruUi.leave(this,"anime365",()->{try{Api.saveToken(this,"");}catch(Exception ignored){}showTab(0);})));
   body.addView(bottom);
-  TextView v=text("Yoru Anime "+version(),12,MUTED);v.setPadding(side(),dp(14),side(),0);body.addView(v);
-  if(tv)test.post(test::requestFocus);
+  TextView v=text("Yoru "+version(),12,MUTED);v.setPadding(side(),dp(14),side(),0);body.addView(v);
+  if(tv)toggle.post(toggle::requestFocus);
  }
- LinearLayout panel(LinearLayout body){LinearLayout p=column();p.setPadding(dp(16),dp(14),dp(16),dp(14));p.setBackground(bg(0x99172335,14,1,STROKE));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(side(),0,side(),dp(12));body.addView(p,lp);return p;}
+ LinearLayout panel(LinearLayout body){LinearLayout p=column();p.setPadding(dp(16),dp(14),dp(16),dp(14));p.setBackground(bg(0x9911151d,14,1,STROKE));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(side(),0,side(),dp(12));body.addView(p,lp);return p;}
  // Серверы подписаны по порядку в списке: после проверки «Сервер 1» — самый быстрый.
  View serverRow(int number,String host,double mbit,String error){
   LinearLayout r=row();r.setPadding(0,dp(6),0,dp(6));
@@ -898,12 +1049,12 @@ public class MainActivity extends Activity {
  void checkUpdates(boolean manual){io.execute(()->{try{Updater.Release r=Updater.check(this);runOnUiThread(()->{if(isFinishing())return;if(r==null){if(manual)alert("У вас последняя версия — "+Updater.current(this));return;}boolean fresh=available==null||!available.version.equals(r.version);available=r;if(tv)renderTabs();if(manual||fresh)offerUpdate(r);});}catch(Exception e){if(manual)runOnUiThread(()->alert(e.getMessage()));}});}
  void offerUpdate(Updater.Release r){
   String notes=r.notes.isEmpty()?"":"\n\n"+(r.notes.length()>1200?r.notes.substring(0,1200)+"…":r.notes);
-  new AlertDialog.Builder(this).setTitle("Доступна Yoru Anime "+r.version).setMessage("Сейчас установлена "+Updater.current(this)+(r.size>0?". Размер "+Downloads.size(r.size):"")+"."+notes)
+  new AlertDialog.Builder(this).setTitle("Доступна Yoru "+r.version).setMessage("Сейчас установлена "+Updater.current(this)+(r.size>0?". Размер "+Downloads.size(r.size):"")+"."+notes)
    .setPositiveButton("Обновить",(d,w)->startUpdate(r)).setNegativeButton("Позже",null).show();
  }
  void startUpdate(Updater.Release r){
   // Android один раз спрашивает разрешение на установку обновлений из приложения.
-  if(!Updater.canInstall(this)){pendingUpdate=r;new AlertDialog.Builder(this).setTitle("Разрешите обновления").setMessage("Android попросит разрешить Yoru Anime устанавливать приложения. Это нужно один раз — потом обновления ставятся в пару нажатий.").setPositiveButton("Открыть настройки",(d,w)->{try{startActivity(Updater.permissionIntent(this));}catch(Exception e){alert("Откройте Настройки → Приложения → Yoru Anime → Установка неизвестных приложений и разрешите.");}}).setNegativeButton("Отмена",(d,w)->pendingUpdate=null).show();return;}
+  if(!Updater.canInstall(this)){pendingUpdate=r;new AlertDialog.Builder(this).setTitle("Разрешите обновления").setMessage("Android попросит разрешить Yoru устанавливать приложения. Это нужно один раз — потом обновления ставятся в пару нажатий.").setPositiveButton("Открыть настройки",(d,w)->{try{startActivity(Updater.permissionIntent(this));}catch(Exception e){alert("Откройте Настройки → Приложения → Yoru → Установка неизвестных приложений и разрешите.");}}).setNegativeButton("Отмена",(d,w)->pendingUpdate=null).show();return;}
   TextView progress=text("Скачивание…",15,0xff333333);progress.setPadding(dp(24),dp(16),dp(24),dp(8));
   AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Обновление до "+r.version).setView(progress).setCancelable(false).create();dialog.show();
   io.execute(()->{try{java.io.File apk=Updater.download(this,r,(done,total)->runOnUiThread(()->progress.setText(total>0?"Скачано "+(done*100/total)+"% · "+Downloads.size(done)+" из "+Downloads.size(total):"Скачано "+Downloads.size(done))));
@@ -911,7 +1062,7 @@ public class MainActivity extends Activity {
    catch(Exception e){runOnUiThread(()->{dialog.dismiss();alert(e.getMessage());});}});
  }
  String version(){try{return getPackageManager().getPackageInfo(getPackageName(),0).versionName;}catch(Exception e){return "";}}
- void alert(String s){if(!isFinishing())new AlertDialog.Builder(this).setTitle("Yoru Anime").setMessage(s).setPositiveButton("ОК",null).show();}
+ void alert(String s){if(!isFinishing())new AlertDialog.Builder(this).setTitle("Yoru").setMessage(s).setPositiveButton("ОК",null).show();}
 
  // Постер для плитки «Продолжить» на главном экране Night TV.
  void saveContinuePoster(JSONObject item){String url=item.optString("posterUrlSmall",item.optString("posterUrl"));io.execute(()->{try{Bitmap b=posters.get(url);if(b==null)b=loadPoster(url,dp(220));if(b==null)return;java.io.File tmp=new java.io.File(getFilesDir(),"continue.tmp");try(java.io.FileOutputStream out=new java.io.FileOutputStream(tmp)){b.compress(Bitmap.CompressFormat.JPEG,88,out);}tmp.renameTo(new java.io.File(getFilesDir(),"continue.jpg"));}catch(Exception ignored){}});}
@@ -922,9 +1073,9 @@ public class MainActivity extends Activity {
  // «Продолжить» с главного экрана Night TV: открыть последнее аниме и сразу включить ту же серию.
  void continueWatching(){try{SharedPreferences lp=State.lastPlay(this);if(!lp.contains("item"))return;JSONObject item=new JSONObject(lp.getString("item","{}")),ep=new JSONObject(lp.getString("episode","{}"));autoPlay=ep.optInt("id");if(tab!=0)showTab(0);openDetail(item,false);}catch(Exception ignored){}}
 
- @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(intent.hasExtra("development_test_video")||intent.getBooleanExtra("development_test_subscriber",false))recreate();else if(intent.getBooleanExtra("continue",false))continueWatching();}
- @Override protected void onResume(){super.onResume();active=true;if(ticker!=null){handler.removeCallbacks(ticker);handler.post(ticker);}if(Updater.due(this))checkUpdates(false);if(pendingUpdate!=null&&Updater.canInstall(this)){Updater.Release r=pendingUpdate;pendingUpdate=null;startUpdate(r);}if(!tv)Sync.run(this,()->{if(current==null)refresh();});}
- @Override protected void onPause(){super.onPause();active=false;if(ticker!=null)handler.removeCallbacks(ticker);if(!stack.isEmpty()&&scroll!=null)stack.get(stack.size()-1).scrollY=scroll.getScrollY();}
+ @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(intent.hasExtra("development_test_video")||intent.getBooleanExtra("development_test_subscriber",false))recreate();else if(intent.getBooleanExtra("continue",false))continueWatching();else if(intent.getBooleanExtra("downloads",false))showTab(3);}
+ @Override protected void onResume(){super.onResume();active=true;if(ticker!=null){handler.removeCallbacks(ticker);handler.post(ticker);}if(Updater.due(this))checkUpdates(false);if(pendingUpdate!=null&&Updater.canInstall(this)){Updater.Release r=pendingUpdate;pendingUpdate=null;startUpdate(r);}if(!tv){Sync.run(this,()->{if(current==null)refresh();});io.execute(()->DownloadService.ensure(this));}Yoru.listener=()->{if(active&&current==null)refresh();};Yoru.syncLater(this);}
+ @Override protected void onPause(){super.onPause();active=false;Yoru.syncLater(this);if(ticker!=null)handler.removeCallbacks(ticker);if(!stack.isEmpty()&&scroll!=null)stack.get(stack.size()-1).scrollY=scroll.getScrollY();}
  @Override protected void onActivityResult(int req,int res,Intent data){
   super.onActivityResult(req,res,data);if(req!=7||data==null)return;
   try{
@@ -935,7 +1086,7 @@ public class MainActivity extends Activity {
     JSONObject n=next?nextEpisode(ep.optInt("id")):null;
     if(n!=null)autoNextAfter=ep.optInt("id");
     refresh();
-   }else if(next&&tab==3&&!tv){
+   }else if(next&&tab==3&&!tv&&!downloadsManga){
     // Из «Загрузок»: следующая скачанная серия того же аниме.
     JSONArray a=Downloads.items(this);JSONObject best=null;double after=ep.optDouble("episodeInt");
     for(int i=0;i<a.length();i++){JSONObject o=a.optJSONObject(i);double n=o.optJSONObject("episode").optDouble("episodeInt");if(o.optInt("seriesId")==item.optInt("id")&&n>after&&Downloads.done(this,o.optInt("id"))&&(best==null||n<best.optJSONObject("episode").optDouble("episodeInt")))best=o;}
@@ -944,6 +1095,7 @@ public class MainActivity extends Activity {
    else refresh();
   }catch(Exception ignored){}
  }
- @Override public void onBackPressed(){back();}
+ @Override public boolean dispatchKeyEvent(KeyEvent e){if(manga!=null&&manga.key(e))return true;return super.dispatchKeyEvent(e);}
+ @Override public void onBackPressed(){if(manga!=null&&manga.back())return;back();}
  @Override protected void onDestroy(){stopTicker();io.shutdownNow();super.onDestroy();}
 }
