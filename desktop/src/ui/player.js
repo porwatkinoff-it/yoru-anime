@@ -125,6 +125,30 @@ class Player {
     el.querySelector('.p-volume').value = v.volume;
     this.listen();
     this.poke();
+    this.media();
+  }
+  // Медиаклавиши, наушники и «Сейчас играет» в системе (macOS, Windows, Linux MPRIS).
+  media() {
+    const ms = navigator.mediaSession; if (!ms) return;
+    const v = this.v;
+    try {
+      ms.metadata = new MediaMetadata({ title: this.pb.episodeTitle || '', artist: this.pb.title || '', album: 'Yoru', artwork: this.pb.poster ? [{ src: this.pb.poster, sizes: '512x768' }] : [] });
+      const set = (a, f) => { try { ms.setActionHandler(a, f); } catch {} };
+      set('play', () => v.play().catch(() => {}));
+      set('pause', () => v.pause());
+      set('seekbackward', e => this.seek(-(e?.seekOffset || 10)));
+      set('seekforward', e => this.seek(e?.seekOffset || 10));
+      set('seekto', e => { if (e?.seekTime != null) v.currentTime = e.seekTime; });
+      set('nexttrack', this.nextTitle ? () => this.close(true) : null);
+      const pos = () => { try { if (v.duration) ms.setPositionState({ duration: v.duration, position: Math.min(v.currentTime, v.duration), playbackRate: v.playbackRate || 1 }); } catch {} };
+      v.addEventListener('play', () => { ms.playbackState = 'playing'; pos(); });
+      v.addEventListener('pause', () => { ms.playbackState = 'paused'; pos(); });
+      v.addEventListener('seeked', pos); v.addEventListener('loadedmetadata', pos);
+    } catch {}
+  }
+  unmedia() {
+    const ms = navigator.mediaSession; if (!ms) return;
+    try { ms.metadata = null; ms.playbackState = 'none'; for (const a of ['play', 'pause', 'seekbackward', 'seekforward', 'seekto', 'nexttrack']) ms.setActionHandler(a, null); } catch {}
   }
   load(at) {
     const v = this.v;
@@ -320,7 +344,8 @@ class Player {
     }
     if (!d) return;
     if (Date.now() - this.lastSave > 15000) this.save();
-    if (!this.markedDone && (f > .93 || d - t < 120)) { this.markedDone = true; D.markDone(this.pb.episodeId); }
+    // Как на телефонах: 90% или (после середины) осталось ≤ 3 минут — эндинг и превью не обязательны.
+    if (!this.markedDone && (f >= .9 || (f >= .5 && d - t <= 180))) { this.markedDone = true; D.markDone(this.pb.episodeId); }
     // «Следующая серия» в последние 90 секунд.
     const pill = this.ui.pill;
     const show = this.nextTitle && !this.dismissedNext && d - t < NEXT_AT && d > NEXT_AT * 3;
@@ -401,6 +426,7 @@ class Player {
     this.offFs?.();
     this.detachSubs();
     this.v.pause(); this.v.removeAttribute('src'); this.v.load();
+    this.unmedia();
     if (this.fs) window.yoru.fullscreen(false);
     this.el.remove();
     if (current === this) current = null;

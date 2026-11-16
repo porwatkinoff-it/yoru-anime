@@ -5,6 +5,7 @@
 mod account;
 mod dl;
 mod manga;
+mod shiki;
 #[cfg(not(target_os = "macos"))]
 mod migrate;
 mod update;
@@ -329,6 +330,7 @@ fn main() {
             app.manage(dl::Dl::new(dir.join("Downloads")));
             app.manage(manga::Manga::new(&dir));
             app.manage(account::Account::new(&dir));
+            app.manage(shiki::Shiki::new(&dir));
             account::init(&handle);
             let import = import_script(&dir);
             app.manage(Yoru { token: Mutex::new(token), http, dir: dir.clone() });
@@ -377,7 +379,8 @@ fn main() {
             account::account_status, account::account_set_server, account::account_register, account::account_sign_in,
             account::account_forgot, account::account_reset, account::account_me, account::account_verify_email, account::account_resend,
             account::account_change_email, account::account_change_password, account::account_sign_out, account::account_remove_device,
-            account::account_delete, account::account_forget, account::account_sync
+            account::account_delete, account::account_forget, account::account_sync,
+            shiki::shiki_status, shiki::shiki_set_keys, shiki::shiki_login, shiki::shiki_logout, shiki::shiki_call
         ])
         .build(tauri::generate_context!())
         .expect("не удалось запустить Yoru");

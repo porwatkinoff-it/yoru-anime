@@ -5,6 +5,7 @@ import * as O from './offline.js';
 import * as Sv from './servers.js';
 import * as Mg from './manga.js';
 import * as Acc from './account.js';
+import * as Sh from './shiki.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const main = $('#main');
@@ -43,9 +44,8 @@ function backdrop(src, filter) {
 }
 function card(it, { progress = null, fresh = false } = {}) {
   keep(it);
-  const s = it.score > 0 ? `<span class="score ${D.scoreClass(it.score)}">${D.scoreText(it.score)}</span>` : '';
   const p = progress != null ? `<div class="progress"><i style="width:${Math.round(progress * 100)}%"></i></div>` : '';
-  return `<button class="card" data-open="${it.id}"><div class="poster">${img(it.posterSmall)}${s}${fresh ? '<span class="badge-new">НОВАЯ СЕРИЯ</span>' : ''}${p}</div><div class="t">${esc(it.title)}</div><div class="s">${esc(it.subtitle)}</div></button>`;
+  return `<button class="card" data-open="${it.id}"><div class="poster">${img(it.posterSmall)}${Sh.uhdBadge(it)}${fresh ? '<span class="badge-new">НОВАЯ СЕРИЯ</span>' : ''}${p}</div><div class="t">${esc(it.title)}</div>${Sh.capHTML(it)}</button>`;
 }
 function wideCard(it, label, progress) {
   keep(it);
@@ -181,12 +181,12 @@ const SHELVES = [
   { title: 'Детективы', params: { genres: 7 } }
 ];
 const shelfCache = new Map();
-const heroPick = Math.floor(Math.random() * 5);
 const loadShelf = params => { const k = JSON.stringify(params); if (!shelfCache.has(k)) shelfCache.set(k, D.shelf(params).catch(e => { shelfCache.delete(k); throw e; })); return shelfCache.get(k); };
 
 function Home(_r, alive) {
   const page = document.createElement('div'); page.className = 'page'; main.append(page);
-  page.innerHTML = `<div class="hero"><div class="shade"></div></div><div id="continue"></div><div id="favs"></div><div id="shelves"></div>`;
+  // Баннера наверху больше нет (как на телефонах): сразу «Продолжить просмотр» и полки.
+  page.innerHTML = `<div style="height:14px"></div><div id="continue"></div><div id="favs"></div><div id="shelves"></div>`;
   // «Продолжить просмотр»: начатые и недосмотренные.
   const cont = D.history().filter(it => D.lastEpisode(it) && !D.finished(it)).slice(0, 20);
   if (cont.length) $('#continue', page).innerHTML = `<section class="shelf"><div class="shelf-head"><h2>Продолжить просмотр</h2>${arrows()}</div><div class="row wide-row">${cont.map(it => wideCard(it, D.lastEpisodeTitle(it) || 'Продолжить', D.fraction(D.lastEpisode(it)))).join('')}</div></section>`;
@@ -202,7 +202,6 @@ function Home(_r, alive) {
       if (!alive()) return;
       sec.querySelector('.row, .state')?.remove();
       sec.insertAdjacentHTML('beforeend', items.length ? `<div class="row">${items.map(it => card(it)).join('')}</div>` : `<div class="state">Пусто</div>`);
-      if (s.params.isAiring) hero(page, items);
     }).catch(e => { if (!alive()) return; sec.querySelector('.row, .state')?.remove(); sec.insertAdjacentHTML('beforeend', errorState(e.message)); sec.querySelector('[data-retry]').onclick = () => { sec.querySelector('.state').outerHTML = skeletonRow(); fill(); }; });
     fill();
   }
@@ -216,52 +215,61 @@ function bindArrows(root) {
     row?.scrollBy({ left: +b.dataset.scroll * row.clientWidth * .85 });
   });
 }
-const heroDetails = new Map();
-async function hero(page, items) {
-  const it = items[Math.min(heroPick, items.length - 1)]; if (!it) return;
-  const box = $('.hero', page);
-  const paint = summary => {
-    box.innerHTML = `<div class="shade"></div><div class="art" style="background-image:url('${esc(it.poster)}')"></div>
-      <div class="info"><div class="eyebrow">Сейчас выходит</div><h1>${esc(it.title)}</h1>
-      <div class="meta">${it.score ? `<span class="score-text" style="color:var(--score-${D.scoreClass(it.score)})">★ ${D.scoreText(it.score)}</span>` : ''}<span>${esc(it.subtitle)}</span>${it.genres.slice(0, 3).map(g => `<span>${esc(g.title)}</span>`).join('')}</div>
-      <p>${esc(summary || '')}</p>
-      <div class="actions"><button class="btn primary" data-open="${it.id}" data-resume="1">${icon.play}Смотреть</button><button class="btn" data-open="${it.id}">Подробнее</button></div></div>`;
-    if (it.poster) box.prepend(backdrop(it.poster, 'blur(4px) saturate(1.25) brightness(.55)'));
-  };
-  keep(it); paint(heroDetails.get(it.id) || '');
-  if (!heroDetails.has(it.id)) {
-    try { const d = await D.details(it.id); heroDetails.set(it.id, d.item.summary); if (box.isConnected) paint(d.item.summary); } catch {}
-  }
-}
-
 // ---------- Поиск ----------
 const GENRES = [[1, 'Экшен'], [2, 'Приключения'], [4, 'Комедия'], [8, 'Драма'], [10, 'Фэнтези'], [22, 'Романтика'], [24, 'Фантастика'], [36, 'Повседневность'], [62, 'Исекай'], [7, 'Детектив'], [37, 'Сверхъестественное'], [23, 'Школа'], [30, 'Спорт'], [18, 'Меха'], [40, 'Психологическое'], [41, 'Триллер'], [13, 'Исторический'], [19, 'Музыка'], [63, 'Злодейка'], [76, 'Гурман']];
 function Search(r, alive) {
   r.query ??= ''; r.genre ??= 0;
   const page = document.createElement('div'); page.className = 'page'; main.append(page);
+  const manga = Mg.available();
   page.innerHTML = `<div class="page-head"><h1>Поиск</h1></div>
-    <label class="search-box">${icon.search}<input type="search" placeholder="Название аниме" value="${esc(r.query)}" spellcheck="false"></label>
+    <label class="search-box">${icon.search}<input type="search" placeholder="${manga ? 'Аниме, манга или ссылка Шикимори' : 'Название аниме или ссылка Шикимори'}" value="${esc(r.query)}" spellcheck="false"><span class="spinner small" hidden></span></label>
     <div class="chips">${GENRES.map(([id, t]) => `<button class="chip ${r.genre === id ? 'on' : ''}" data-genre="${id}">${t}</button>`).join('')}</div>
-    <div id="results"></div>`;
-  const input = $('input', page), out = $('#results', page);
-  let items = [], offset = 0, done = false, busy = false, gen = 0;
-  const params = () => r.query.trim() ? { query: r.query.trim() } : r.genre ? { genres: r.genre } : { isAiring: 1 };
-  const heading = () => r.query.trim() ? 'Результаты' : r.genre ? GENRES.find(g => g[0] === r.genre)[1] : 'Сейчас выходят';
+    <div id="m-results"></div><div id="results"></div>`;
+  const input = $('input', page), out = $('#results', page), mOut = $('#m-results', page), spin = $('.search-box .spinner', page);
+  let items = [], offset = 0, done = false, busy = false, gen = 0, q = '', note = '';
+  const params = () => q ? { query: q } : r.genre ? { genres: r.genre } : { isAiring: 1 };
+  const heading = () => note || (q ? 'Аниме' : r.genre ? GENRES.find(g => g[0] === r.genre)[1] : 'Сейчас выходят');
+  // Манга по тому же запросу — строкой над аниме (MangaLib; Com-X — во вкладке «Манга»).
+  async function loadManga(g, text) {
+    mOut.innerHTML = '';
+    if (!manga || !text) return;
+    try {
+      const p = await Mg.search('mangalib', text, 1);
+      if (g !== gen || !alive() || !p.items.length) return;
+      mOut.innerHTML = `<section class="shelf"><div class="shelf-head"><h2>Манга</h2>${arrows()}</div><div class="row">${p.items.slice(0, 20).map(Mg.cardHTML).join('')}</div></section>`;
+    } catch {}
+  }
   async function load(reset) {
-    if (reset) { items = []; offset = 0; done = false; gen++; out.innerHTML = loadingState(); }
+    if (reset) {
+      items = []; offset = 0; done = false; gen++; note = ''; q = r.query.trim();
+      out.innerHTML = loadingState(); mOut.innerHTML = '';
+      const g = gen, l = q && Sh.link(q);
+      if (l) {
+        // Ссылка Шикимори: аниме ищем по id MyAnimeList, мангу — по названию.
+        spin.hidden = false;
+        const f = await Sh.resolve(l).catch(() => null);
+        if (g !== gen || !alive()) return;
+        spin.hidden = true;
+        if (f?.anime) { done = true; out.innerHTML = `<div class="section-title" style="margin-top:0">Найдено по ссылке Шикимори</div><div class="grid">${card(f.anime)}</div>`; return; }
+        if (!f) { done = true; out.innerHTML = `<div class="state"><div><b>Ссылка не открылась</b>Шикимори не ответил или такой страницы нет.</div></div>`; return; }
+        q = f.title; note = f.kind === 'manga' ? '' : 'Похожее по названию';
+        if (f.kind === 'manga') { done = true; out.innerHTML = ''; await loadManga(g, f.title); if (g === gen && !mOut.innerHTML) out.innerHTML = `<div class="state"><div><b>Манга не найдена</b>«${esc(f.title)}» нет на MangaLib — попробуйте вкладку «Манга» (Com-X).</div></div>`; return; }
+      } else loadManga(g, q);
+    }
     if (busy && !reset || done) return;
     const g = gen; busy = true;
     try {
       const more = await D.shelf(params(), offset);
       if (g !== gen || !alive()) return;
       items.push(...more.filter(m => !items.some(i => i.id === m.id))); offset += 24; done = more.length < 24;
-      out.innerHTML = items.length ? `<div class="section-title" style="margin-top:0">${esc(heading())}</div><div class="grid">${items.map(it => card(it)).join('')}</div>` : `<div class="state"><div><b>Ничего не нашлось</b>Попробуйте другое название — можно по-русски, по-английски или ромадзи.</div></div>`;
+      out.innerHTML = items.length ? `<div class="section-title" style="margin-top:0">${esc(heading())}</div><div class="grid">${items.map(it => card(it)).join('')}</div>` : `<div class="state"><div><b>${manga ? 'Аниме не нашлось' : 'Ничего не нашлось'}</b>Попробуйте другое название — можно по-русски, по-английски или ромадзи.</div></div>`;
     } catch (e) { if (g === gen && alive()) { out.innerHTML = errorState(e.message); $('[data-retry]', out).onclick = () => load(true); } }
     finally { if (g === gen) busy = false; }
   }
   let t;
   input.addEventListener('input', () => { r.query = input.value; clearTimeout(t); t = setTimeout(() => load(true), 350); });
   page.addEventListener('click', e => { const c = e.target.closest('[data-genre]'); if (!c) return; const id = +c.dataset.genre; r.genre = r.genre === id ? 0 : id; page.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', +x.dataset.genre === r.genre)); if (r.genre) { r.query = ''; input.value = ''; } load(true); });
+  bindArrows(page);
   const onScroll = () => { if (!alive()) return main.removeEventListener('scroll', onScroll); if (main.scrollTop + main.clientHeight > main.scrollHeight - 600) load(false); };
   main.addEventListener('scroll', onScroll);
   load(true);
@@ -273,14 +281,43 @@ function Mine(r) {
   r.part ??= 'favorites';
   const page = document.createElement('div'); page.className = 'page'; main.append(page);
   const draw = () => {
+    if (r.part === 'shiki' && !Sh.acc.signedIn) r.part = 'favorites';
+    const tabs = `<div class="page-head"><h1>Моё</h1></div>
+      <div class="tabs"><button data-part="favorites" class="${r.part === 'favorites' ? 'on' : ''}">Избранное</button><button data-part="history" class="${r.part === 'history' ? 'on' : ''}">История</button>${Sh.acc.signedIn ? `<button data-part="shiki" class="${r.part === 'shiki' ? 'on' : ''}">Шикимори</button>` : ''}</div>`;
+    if (r.part === 'shiki') { page.innerHTML = tabs + shikiList(r); return; }
     const list = r.part === 'favorites' ? D.favorites() : D.history();
-    page.innerHTML = `<div class="page-head"><h1>Моё</h1></div>
-      <div class="tabs"><button data-part="favorites" class="${r.part === 'favorites' ? 'on' : ''}">Избранное</button><button data-part="history" class="${r.part === 'history' ? 'on' : ''}">История</button></div>
+    page.innerHTML = tabs + `
       ${list.length ? `<div class="grid">${list.map(it => card(it, { fresh: r.part === 'favorites' && D.hasNew(it), progress: r.part === 'history' && D.lastEpisode(it) ? D.fraction(D.lastEpisode(it)) : null })).join('')}</div>`
         : `<div class="state"><div><b>${r.part === 'favorites' ? 'Здесь пока пусто' : 'Вы ещё ничего не смотрели'}</b>${r.part === 'favorites' ? 'Нажмите ♡ на странице аниме, чтобы добавить его сюда.' : 'Начатые аниме появятся здесь.'}</div></div>`}`;
   };
-  page.addEventListener('click', e => { const b = e.target.closest('[data-part]'); if (b) { r.part = b.dataset.part; draw(); } });
+  page.addEventListener('click', e => {
+    const b = e.target.closest('[data-part]'); if (b) { r.part = b.dataset.part; draw(); return; }
+    const f = e.target.closest('[data-sfilter]'); if (f) { r.filter = f.dataset.sfilter; draw(); return; }
+    const o = e.target.closest('[data-smal]'); if (o) openShikiRate(+o.dataset.smal, o);
+  });
+  const off = Sh.onAcc(() => { if (!document.contains(page)) return off(); if (r.part === 'shiki' && !Sh.acc.syncing) draw(); });
   draw();
+}
+// Список с Шикимори: фильтр по статусу, постер, прогресс, оценки.
+function shikiList(r) {
+  const all = Sh.list(), f = r.filter || 'all';
+  const rows = f === 'all' ? all : all.filter(x => x.status === f);
+  const count = s => all.filter(x => x.status === s).length;
+  const chips = `<div class="chips"><button class="chip ${f === 'all' ? 'on' : ''}" data-sfilter="all">Все · ${all.length}</button>${Sh.STATUSES.filter(([s]) => count(s)).map(([s, t]) => `<button class="chip ${f === s ? 'on' : ''}" data-sfilter="${s}">${t} · ${count(s)}</button>`).join('')}</div>`;
+  if (!all.length) return `<div class="state">${Sh.acc.loading || Sh.acc.syncing ? '<div class="spinner"></div>' : `<div><b>Список пуст</b>${esc(Sh.acc.message || 'На Шикимори пока нет отмеченных аниме.')}</div>`}</div>`;
+  return chips + `<div class="shiki-list">${rows.map(x => `<button class="shiki-row" data-smal="${x.malId}"><img src="${esc(x.poster)}" loading="lazy" decoding="async" alt=""><div style="min-width:0"><b>${esc(x.title)}</b><span>${esc(Sh.statusTitle(x.status))}${x.episodes ? ` · ${x.episodes}${x.total ? ' из ' + x.total : ''} сер.` : ''}</span></div><div class="shiki-sc">${x.siteScore ? `<span class="sc">Shiki ${x.siteScore.toFixed(2)}</span>` : ''}${x.score ? `<span class="mine">★ ${x.score}</span>` : ''}</div></button>`).join('')}</div>`;
+}
+// Открыть аниме из списка Шикимори: ищем его в Anime 365 по id MyAnimeList.
+async function openShikiRate(mal, btn) {
+  btn.classList.add('busy');
+  try {
+    const map = D.S.get('shiki-map', {});
+    let item = null;
+    if (map[mal]) item = (await D.details(map[mal]).catch(() => null))?.item;
+    if (!item) { const f = await D.shelf({ myAnimeListId: mal }, 0, 1); item = f[0]; if (item) { map[mal] = item.id; D.S.set('shiki-map', map); } }
+    if (!item) { toast('Этого аниме нет в Anime 365'); return; }
+    push({ view: 'detail', item });
+  } catch (e) { toast(e.message); } finally { btn.classList.remove('busy'); }
 }
 
 // ---------- Расписание ----------
@@ -330,12 +367,12 @@ function Account(_r, alive) {
       <div class="kv"><span>Аккаунт</span><b>${esc(account?.name || 'Вход выполнен')}</b></div>
       <div class="kv"><span>Подписка</span><b>${account?.premium ? 'Активна' + (account.until ? ' до ' + account.until.toLocaleDateString('ru') : '') : account?.premium === false ? 'Нет' : '…'}</b></div>
       <div class="actions" style="margin-top:16px"><button class="btn" id="site">${icon.globe}Anime 365</button><button class="btn" id="logout">Выйти</button></div></div>
-      <div class="panel" id="servers"></div>`
+`
       : `<form class="panel" id="login"><h2>Вход в Anime 365</h2><p>Нужен аккаунт с подпиской — без неё сайт не даёт видео. Пароль уходит только на сайт, приложение хранит лишь ключ входа.</p>
       <label class="field"><span>Почта</span><input name="email" type="email" autocomplete="username" required></label>
       <label class="field"><span>Пароль</span><input name="password" type="password" autocomplete="current-password" required></label>
       <p class="error" hidden></p><button class="btn primary" type="submit">Войти</button></form>`) +
-      `<div id="manga-acc"></div><div class="panel"><h2>Yoru ${esc(version)}</h2><p id="upd-text">Обновления проверяются автоматически.</p><div class="actions"><button class="btn" id="check">Проверить обновления</button></div></div>`;
+      `<div id="shiki-acc"></div><div id="manga-acc"></div><div class="panel"><h2>Yoru ${esc(version)}</h2><p id="upd-text">Обновления проверяются автоматически.</p><div class="actions"><button class="btn" id="check">Проверить обновления</button></div></div>`;
     $('#site', page)?.addEventListener('click', () => window.yoru.openExternal('https://smotret-anime.app/'));
     $('#logout', page)?.addEventListener('click', async () => { if (!await Acc.askLogout('anime365', 'Anime 365')) return; await window.yoru.logout(); account = null; paintAccount(); draw(); });
     $('#login', page)?.addEventListener('submit', async e => {
@@ -347,45 +384,73 @@ function Account(_r, alive) {
       await refreshAccount(); if (alive()) draw(); toast('Вы вошли в Anime 365');
     });
     $('#check', page).addEventListener('click', () => checkUpdate(true));
-    const sv = $('#servers', page);
-    if (sv) ServersPanel(sv, alive);
     Mg.AccountPanels($('#manga-acc', page), alive);
     Acc.Panel($('#yoru-acc', page));
+    ShikiPanel($('#shiki-acc', page), alive);
   };
   draw();
 }
 
-// Видеосерверы с проверкой скорости — как в Android- и iOS-версиях.
-// Серверы подписаны по порядку в списке: после проверки «Сервер 1» — самый быстрый.
-function ServersPanel(el, alive) {
-  let results = null, testing = false, message = '';
-  const ago = t => { const m = Math.round((t - Date.now()) / 60000), f = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' });
-    return Math.abs(m) < 60 ? f.format(m, 'minute') : Math.abs(m) < 1440 ? f.format(Math.round(m / 60), 'hour') : f.format(Math.round(m / 1440), 'day'); };
-  const speedClass = r => r.mbit == null ? 'low' : r.mbit >= 25 ? 'high' : r.mbit >= 8 ? 'mid' : 'low';
+// Шикимори: ключи приложения (один раз) → вход на сайте → оценки, статусы и перенос просмотренного в обе стороны.
+function ShikiPanel(box, alive) {
+  if (!Sh.acc.available) return;
+  let editing = false, error = '';
+  const a = Sh.acc;
   const draw = () => {
-    if (!alive()) return;
-    const saved = Sv.speeds();
-    const rows = results || Sv.seen().map(h => ({ host: h, mbit: saved[h] ?? null, error: saved[h] == null ? 'не проверен' : '' }));
-    const t = Sv.tested();
-    el.innerHTML = `<h2>Сервер видео</h2>
-      <div class="seg"><button data-auto="1" class="${Sv.auto() ? 'on' : ''}">Самый быстрый</button><button data-auto="0" class="${Sv.auto() ? '' : 'on'}">Как выдаёт сайт</button></div>
-      <p class="hint">${Sv.auto() ? 'Видео и загрузки идут через самый быстрый из проверенных серверов. Если он не ответит, плеер возьмёт ссылку сайта.' : 'Каждую серию сайт отдаёт со случайного сервера.'}</p>
-      ${rows.map((r, i) => `<div class="kv server"><span>Сервер ${i + 1}${r.host === Sv.best() ? ' <i class="best">лучший</i>' : ''}</span><b class="speed ${speedClass(r)}">${r.mbit != null ? Math.round(r.mbit) + ' Мбит/с' : esc(r.error || '—')}</b></div>`).join('')}
-      ${message ? `<p class="error">${esc(message)}</p>` : ''}
-      <div class="actions"><button class="btn primary" id="test" ${testing ? 'disabled' : ''}>${testing ? 'Проверяю…' : 'Проверить серверы'}</button></div>
-      <p class="hint">${testing ? '' : t ? 'Последняя проверка: ' + ago(t) : 'Серверы ещё не проверялись'}</p>`;
-    el.querySelectorAll('[data-auto]').forEach(b => b.addEventListener('click', () => { Sv.setAuto(b.dataset.auto === '1'); draw(); }));
-    $('#test', el).addEventListener('click', async () => {
-      testing = true; message = ''; results = []; draw();
-      try { await Sv.test(r => { results.push(r); draw(); }); }
-      catch (e) { message = e.message; }
-      // Проверка не началась — показываем сохранённые серверы.
-      if (!results.length) results = null;
-      else results.sort((a, b) => (b.mbit ?? -1) - (a.mbit ?? -1));
-      testing = false; draw();
-    });
+    if (!alive() || !document.contains(box)) return off();
+    const busy = a.syncing ? `<div class="shiki-step"><div class="spinner small"></div>${esc(a.step || 'Синхронизация…')}</div>` : '';
+    if (!a.configured || editing) {
+      box.innerHTML = `<form class="panel" id="shiki-keys"><h2>Шикимори</h2>
+        <p>Оценки, статусы и просмотренные серии синхронизируются с вашим списком на Шикимори. Если вы уже вошли в Шикимори на другом устройстве с аккаунтом Yoru, вход придёт сюда сам — достаточно войти в аккаунт Yoru. Иначе один раз создайте приложение на сайте:</p>
+        <ol class="steps"><li>Откройте <button type="button" class="link" id="shiki-apps">shikimori.io/oauth/applications</button> и нажмите «Новое приложение».</li>
+        <li>Название — «Yoru», Redirect URI — <code>yoru://shikimori</code>, право — <b>user_rates</b>.</li>
+        <li>Вставьте сюда Client ID и Client Secret.</li></ol>
+        <label class="field"><span>Client ID</span><input name="id" autocomplete="off" spellcheck="false" required></label>
+        <label class="field"><span>Client Secret</span><input name="secret" type="password" autocomplete="off" spellcheck="false" required></label>
+        <p class="error" ${error ? '' : 'hidden'}>${esc(error)}</p>
+        <div class="actions"><button class="btn primary" type="submit">Сохранить</button>${a.configured ? '<button class="btn" type="button" id="shiki-cancel">Отмена</button>' : ''}</div></form>`;
+      $('#shiki-apps', box).onclick = () => window.yoru.openExternal(Sh.SITE + '/oauth/applications');
+      $('#shiki-cancel', box)?.addEventListener('click', () => { editing = false; error = ''; draw(); });
+      $('#shiki-keys', box).onsubmit = async e => {
+        e.preventDefault(); const f = e.target, b = $('[type=submit]', f);
+        b.classList.add('busy'); b.disabled = true;
+        try { await Sh.setKeys(f.id.value, f.secret.value); editing = false; error = ''; } catch (x) { error = String(x); }
+        draw();
+      };
+      return;
+    }
+    if (!a.signedIn) {
+      box.innerHTML = `<div class="panel"><h2>Шикимори</h2><p>Войдите, чтобы ставить оценки и вести список. Досмотренные серии будут отмечаться на Шикимори, а отмеченное там — появляться просмотренным в Yoru.</p>
+        <p class="error" ${error ? '' : 'hidden'}>${esc(error)}</p>
+        <div class="actions"><button class="btn primary" id="shiki-login">Войти через Шикимори</button><button class="btn" id="shiki-edit">Изменить ключи приложения</button></div></div>`;
+      $('#shiki-edit', box).onclick = () => { editing = true; error = ''; draw(); };
+      $('#shiki-login', box).onclick = async e => {
+        const b = e.currentTarget; b.classList.add('busy'); b.disabled = true; b.lastChild.textContent = 'Окно входа открыто…';
+        try { await Sh.login(); error = ''; toast('Вы вошли в Шикимори'); } catch (x) { error = String(x); }
+        draw();
+      };
+      return;
+    }
+    const n = Object.keys(a.rates).length;
+    box.innerHTML = `<div class="panel"><h2>Шикимори</h2>
+      <div class="kv"><span>Аккаунт</span><b>${esc(a.nickname || 'Вход выполнен')}</b></div>
+      <div class="kv"><span>В списке</span><b>${a.loading && !n ? '…' : n + ' ' + plural(n, 'аниме', 'аниме', 'аниме')}</b></div>
+      ${busy}${!a.syncing && (a.result || a.message) ? `<p class="${a.message ? 'error' : 'shiki-ok'}" style="margin-top:12px">${esc(a.message || a.result)}</p>` : ''}
+      <div class="actions" style="margin-top:16px"><button class="btn ${a.syncing ? 'busy' : ''}" id="shiki-sync" ${a.syncing ? 'disabled' : ''}>Синхронизировать просмотренное</button><button class="btn" id="shiki-site">${icon.globe}Профиль</button><button class="btn" id="shiki-out">Выйти из Шикимори</button></div></div>`;
+    $('#shiki-sync', box).onclick = () => Sh.syncBoth(true);
+    $('#shiki-site', box).onclick = () => window.yoru.openExternal(Sh.SITE + '/' + encodeURIComponent(a.nickname));
+    $('#shiki-out', box).onclick = async () => { if (!await Acc.askLogout('shikimori', 'Шикимори')) return; await Sh.logout(); toast('Вы вышли из Шикимори'); };
   };
+  const off = Sh.onAcc(draw);
   draw();
+}
+
+// Видеосерверы пользователь больше не видит: раз в сутки приложение само проверяет их скорость
+// (по последней включённой серии) и подставляет самый быстрый; если он не ответит — ссылку сайта.
+async function autoServers() {
+  Sv.setAuto(true);
+  if (Date.now() - Sv.tested() < 86400e3 || !(await window.yoru.signedIn())) return;
+  try { await Sv.test(() => {}); } catch {}
 }
 
 // ---------- Страница аниме ----------
@@ -393,7 +458,8 @@ function Detail(r, alive) {
   const it = r.item;
   const page = document.createElement('div'); page.className = 'page'; main.append(page);
   const back = `<div class="top-bar"><button class="back" data-back aria-label="Назад">${icon.back}</button></div>`;
-  let data = r.data, seasonList = r.seasons;
+  let data = r.data, seasonList = r.seasons, shikiText = r.shikiText || '';
+  Sh.wantNow(it);
   const draw = () => {
     const full = data ? data.item : it;
     const fav = D.isFavorite(it);
@@ -413,12 +479,14 @@ function Detail(r, alive) {
     page.innerHTML = back + `<div class="detail-hero"><div class="shade"></div>
       <div class="detail-top"><div class="poster"><img src="${esc(full.poster || it.poster)}" alt=""></div><div style="min-width:0;padding-bottom:6px">
       <h1>${esc(full.title)}</h1>${full.raw.titles?.romaji && full.raw.titles.romaji !== full.title ? `<div class="sub">${esc(full.raw.titles.romaji)}</div>` : ''}
-      <div class="meta">${full.score ? `<span class="score-text" style="color:var(--score-${D.scoreClass(full.score)})">★ ${D.scoreText(full.score)}</span>` : ''}${full.kind ? `<span>${esc(full.kind)}</span>` : ''}${full.season ? `<span>${esc(full.season)}</span>` : full.year ? `<span>${full.year}</span>` : ''}${regCount ? `<span>${regCount} ${plural(regCount, 'серия', 'серии', 'серий')}</span>` : ''}</div>
+      <div class="meta">${Sh.scoresLine(full)}${full.kind ? `<span>${esc(full.kind)}</span>` : ''}${full.season ? `<span>${esc(full.season)}</span>` : full.year ? `<span>${full.year}</span>` : ''}${regCount ? `<span>${regCount} ${plural(regCount, 'серия', 'серии', 'серий')}</span>` : ''}</div>
       <div class="genres">${full.genres.map(g => `<span>${esc(g.title)}</span>`).join('')}</div>
       <div class="actions">${data ? (resume ? `<button class="btn primary" id="play">${icon.play}${started ? 'Продолжить · ' + esc(resume.title) : 'Смотреть · ' + esc(resume.title)}</button>` : '') : `<button class="btn primary" disabled>${icon.play}Загрузка…</button>`}
-      <button class="btn icon ${fav ? 'on' : ''}" id="fav" title="${fav ? 'Убрать из избранного' : 'В избранное'}">${icon.heart}</button></div>
+      <button class="btn icon ${fav ? 'on' : ''}" id="fav" title="${fav ? 'Убрать из избранного' : 'В избранное'}">${icon.heart}</button>
+      <button class="btn" id="shiki" title="Открыть страницу на Шикимори">${icon.globe}Шикимори</button></div>
+      <div id="shiki-rate"></div>
       ${trSig && data && (resume || eps[0]) ? `<div class="tr-line" title="Серии включаются с этим переводом. Правый щелчок по серии — выбрать другой.">Перевод: <b>${esc(D.translationLabel(trSig))}</b><button class="link" id="tr-change">Сменить</button></div>` : ''}</div></div></div>
-      ${full.summary ? `<div class="summary clamp">${esc(full.summary)}</div><button class="more" hidden>Ещё</button>` : ''}
+      ${(shikiText || full.summary) ? `<div class="summary clamp">${esc(shikiText || full.summary)}</div><button class="more" hidden>Ещё</button>` : ''}
       ${seasonList?.length ? `<div class="section-title">Сезоны</div><div class="seasons">${seasonList.map(s => (keep(s.item), `<button class="chip ${s.current ? 'on' : ''}" ${s.current ? '' : `data-season="${s.id}"`}>${esc(s.label)}</button>`)).join('')}</div>` : ''}
       <div id="eps">${data ? (eps.length ? `<div class="section-title">Серии <small>${regCount}</small></div><div class="episodes">${eps.map((e, i) => (i === firstExtra && i > 0 ? '<div class="ep-sep">Трейлеры и спецвыпуски</div>' : '') + epHTML(e)).join('')}</div>` : `<div class="state">Серий пока нет</div>`) : r.error ? errorState(r.error) : loadingState()}</div>`;
     const bg = full.poster || it.poster;
@@ -427,7 +495,9 @@ function Detail(r, alive) {
     if (sum && sum.scrollHeight > sum.clientHeight + 2) { const m = $('.more', page); m.hidden = false; m.onclick = () => { sum.classList.remove('clamp'); m.remove(); }; }
     $('#fav', page).onclick = () => { D.toggleFavorite(it); if (data) D.seen(it, data.episodes.length); draw(); toast(D.isFavorite(it) ? 'Добавлено в избранное' : 'Убрано из избранного'); };
     $('#play', page)?.addEventListener('click', () => play(resume, true));
+    $('#shiki', page).onclick = e => { const b = e.currentTarget; b.classList.add('busy'); setTimeout(() => b.classList.remove('busy'), 1500); window.yoru.openExternal(Sh.url(full.malId ? full : it)); };
     $('#tr-change', page)?.addEventListener('click', () => play(resume || eps[0], false));
+    paintRate();
     $('[data-retry]', page)?.addEventListener('click', () => { r.error = null; draw(); load(); });
   };
   page.addEventListener('click', e => {
@@ -444,10 +514,37 @@ function Detail(r, alive) {
     e.preventDefault(); play(data.episodes.find(x => x.id === +b.dataset.ep), false);
   });
   const play = (ep, quick) => startEpisode(it, data, ep, quick, () => { if (alive()) draw(); });
+  // Моя оценка и статус на Шикимори (id MyAnimeList есть только в полной карточке).
+  const watchedCount = () => data ? Math.max(0, ...data.episodes.filter(e => data.regular.has(e.id) && D.isDone(e.id)).map(e => e.number)) : 0;
+  const paintRate = () => {
+    const box = $('#shiki-rate', page), full = data ? data.item : it;
+    if (!box || !Sh.acc.available || !(full.malId > 0)) { if (box) box.innerHTML = ''; return; }
+    if (!Sh.acc.signedIn) { box.innerHTML = `<button class="link shiki-cta" id="shiki-cta">Оценить и отмечать просмотренное на Шикимори</button>`; $('#shiki-cta', box).onclick = () => setTab('account'); return; }
+    const rt = Sh.rate(full), sc = rt?.score || 0;
+    box.innerHTML = `<div class="shiki-rate"><span class="lbl">Моя оценка${sc ? ' · ' + sc : ''}</span><span class="stars">${Array.from({ length: 10 }, (_, i) => `<button data-star="${i + 1}" class="${i < sc ? 'on' : ''}" title="${i + 1}">★</button>`).join('')}</span>
+      <select id="shiki-status" title="Статус на Шикимори">${rt ? '' : '<option value="">Не в списке</option>'}${Sh.STATUSES.map(([s, t]) => `<option value="${s}" ${rt?.status === s ? 'selected' : ''}>${t}${rt?.status === s && rt.episodes ? ' · ' + rt.episodes + ' сер.' : ''}</option>`).join('')}</select></div>`;
+    if (!rt) $('#shiki-status', box).value = '';
+    $('.stars', box).onclick = async e => {
+      const b = e.target.closest('[data-star]'); if (!b) return;
+      const n = +b.dataset.star === sc ? 0 : +b.dataset.star;
+      box.classList.add('busy-row'); await Sh.setScore(full, n, watchedCount()); box.classList.remove('busy-row');
+      if (Sh.acc.message) toast(Sh.acc.message);
+    };
+    $('#shiki-status', box).onchange = async e => {
+      const v = e.target.value; if (!v) { paintRate(); return; }
+      box.classList.add('busy-row'); await Sh.setStatus(full, v); box.classList.remove('busy-row');
+      toast(Sh.acc.message || 'Статус на Шикимори: ' + Sh.statusTitle(v));
+    };
+  };
+  const offRate = Sh.onAcc(() => { if (!alive()) return offRate(); if (!Sh.acc.syncing) paintRate(); });
   const load = async () => {
     try {
       data = r.data = await D.details(it.id);
       if (D.isFavorite(it)) D.seen(it, data.episodes.length);
+      markAlmostWatched(data.episodes);
+      // Описание с Шикимори аккуратнее, чем у Anime 365 (id MyAnimeList есть только в полной карточке).
+      if (!shikiText && data.item.malId) Sh.text(data.item).then(t => { if (!t) return; shikiText = r.shikiText = t; if (alive()) { const y = main.scrollTop; draw(); main.scrollTop = y; } });
+      if (data.item.malId) Sh.wantNow(data.item);
       if (!alive()) return;
       draw();
       if (r.resume) { r.resume = false; const ep = D.resumeEpisode(it, data.episodes); if (ep) play(ep, true); }
@@ -456,6 +553,11 @@ function Detail(r, alive) {
   draw();
   if (!data) load();
   if (!seasonList) D.seasons(it).then(s => { seasonList = r.seasons = s; if (alive() && s.length) { const y = main.scrollTop; draw(); main.scrollTop = y; } });
+}
+
+// Серии, досмотренные до титров (≥ 90%), но не засчитанные по старому правилу (93% или < 2 мин), — засчитываем.
+function markAlmostWatched(eps) {
+  for (const e of eps) if (!D.isDone(e.id) && D.fraction(e.id) >= .9) D.markDone(e.id);
 }
 
 // Выбор перевода и запуск серии. «Смотреть» и щелчок по серии сразу берут запомненный перевод; «Сменить» — показывает выбор.
@@ -497,6 +599,7 @@ async function launch(it, data, ep, t, onClose) {
     next: next ? next.title : null,
     download: O.isEnabled() ? () => O.download(it, ep, t) : null,
     onClose: goNext => {
+      if (data && D.isDone(ep.id) && data.regular.has(ep.id) && ep.number > 0) Sh.episodeDone(data.item, ep.number);
       onClose?.();
       if (goNext && next) playNext(it, data, next, t, onClose);
     }
@@ -582,6 +685,13 @@ Acc.init({
   signedOut: () => { if (quiet() && top().view === 'account') render(main.scrollTop); }
 });
 checkUpdate(false);
+// Шикимори: при запуске тихо переносим просмотренное в обе стороны; итог ручной синхронизации — во всплывашке.
+Sh.onAcc(a => { if (!a.syncing && a.got && quiet() && LIVE.has(top().view)) { a.got = 0; render(main.scrollTop); } });
+let shikiReport = false;
+Sh.onAcc(a => { if (a.reporting) shikiReport = true; else if (shikiReport && !a.syncing) { shikiReport = false; if (a.result) toast(a.result); } });
+Sh.refreshStatus().then(a => setTimeout(() => Sh.syncBoth(false), 6000));
+setTimeout(autoServers, 20000);
+setInterval(autoServers, 6 * 3600e3);
 setInterval(() => checkUpdate(false), 6 * 3600e3);
 setTimeout(async () => {
   const a = await D.refreshFinished(), b = await D.checkNewEpisodes();

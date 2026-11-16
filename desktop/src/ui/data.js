@@ -1,6 +1,6 @@
 // Данные Anime 365 и прогресс просмотра: те же правила и ключи, что в Android- и iOS-версиях.
 export const BASE = 'https://smotret-anime.app';
-export const CARD_FIELDS = 'id,titles,posterUrl,posterUrlSmall,typeTitle,year,myAnimeListScore,season,genres,isHentai';
+export const CARD_FIELDS = 'id,titles,posterUrl,posterUrlSmall,typeTitle,year,myAnimeListScore,myAnimeListId,season,genres,isHentai';
 
 import * as Sv from './servers.js';
 
@@ -36,7 +36,7 @@ export async function api(path, params = {}, auth = false) {
 }
 
 // ---------- Модели ----------
-const cardKeys = ['id', 'titles', 'posterUrl', 'posterUrlSmall', 'typeTitle', 'year', 'myAnimeListScore', 'season', 'genres'];
+const cardKeys = ['id', 'titles', 'posterUrl', 'posterUrlSmall', 'typeTitle', 'year', 'myAnimeListScore', 'myAnimeListId', 'season', 'genres', 'numberOfEpisodes', 'isAiring'];
 export function item(v) {
   const t = v.titles || {};
   const year = +v.year || 0, kind = v.typeTitle || '';
@@ -47,7 +47,7 @@ export function item(v) {
     id: +v.id || 0, title: t.ru || t.romaji || v.title || 'Аниме', year, kind,
     subtitle: [kind, year > 0 ? String(year) : ''].filter(Boolean).join(' · '),
     poster: v.posterUrl || v.posterUrlSmall || '', posterSmall: v.posterUrlSmall || v.posterUrl || '',
-    season: v.season || '', score: +v.myAnimeListScore || 0,
+    season: v.season || '', score: +v.myAnimeListScore || 0, malId: +v.myAnimeListId || 0,
     genres: (v.genres || []).filter(g => g && g.id).map(g => ({ id: +g.id, title: g.title || '' })),
     summary: text, raw
   };
@@ -203,7 +203,7 @@ export async function playback(t, ep, it) {
   const subtitles = d.subtitlesUrl ? makeURL(d.subtitlesUrl) : null;
   if (t.kind.startsWith('sub') && !subtitles) throw new Error('Для этого перевода нет ссылки на субтитры. Выберите другой перевод.');
   remember(t, ep, it);
-  return { options, downloads, subtitles, title: it.title, episodeTitle: ep.title, key: 'position-' + t.id, episodeId: ep.id };
+  return { options, downloads, subtitles, title: it.title, poster: it.poster, episodeTitle: ep.title, key: 'position-' + t.id, episodeId: ep.id };
 }
 
 // ---------- Прогресс, избранное, история ----------

@@ -1,6 +1,6 @@
 // Аккаунт Yoru: свой сервер yoru-sync (Proxmox). Формат и шифрование — как на Android и iPhone.
 // Пароль на сервер не уходит: из него выводятся ключ входа и ключ шифрования.
-// Входы в Anime 365, MangaLib и Com-X шифруются ключом от пароля, сервер хранит только шифротекст.
+// Входы в Anime 365, MangaLib, Com-X и Шикимори шифруются ключом от пароля, сервер хранит только шифротекст.
 // История и прогресс лежат в localStorage интерфейса: страница отдаёт их сюда, а получает слитое состояние.
 use crate::{manga::Manga, write_private, Yoru, UA};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
@@ -18,7 +18,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub const DEFAULT_SERVER: &str = "https://yoru.tailfdcf3d.ts.net";
-const SERVICES: [&str; 3] = ["anime365", "mangalib", "comx"];
+const SERVICES: [&str; 4] = ["anime365", "mangalib", "comx", "shikimori"];
 const ROUNDS: u32 = 210_000;
 #[cfg(target_os = "macos")]
 const DEVICE: &str = "Mac";
@@ -176,7 +176,8 @@ impl Account {
 
     // ───────────── Входы в сервисы ─────────────
     // Единый формат для всех устройств: anime365 {"token"}; mangalib {"access","refresh","expires" (мс с 1970),"name"};
-    // comx [{name,value,domain,path,secure,expires (секунды с 1970)}].
+    // comx [{name,value,domain,path,secure,expires (секунды с 1970)}];
+    // shikimori {"id","secret" (ключи приложения),"access","refresh","expires" (мс с 1970),"userId","nickname"}.
     fn payload(&self, app: &AppHandle, svc: &str) -> Option<Vec<u8>> {
         let v = match svc {
             "anime365" => {
@@ -205,6 +206,7 @@ impl Account {
                 if list.is_empty() { return None; }
                 Value::Array(list)
             }
+            "shikimori" => app.state::<crate::shiki::Shiki>().vault_payload()?,
             _ => return None,
         };
         Some(v.to_string().into_bytes())
@@ -221,6 +223,10 @@ impl Account {
                 if let Some(vt) = m.get_mut("vt").and_then(Value::as_object_mut) { for svc in &empty { vt.remove(*svc); } }
                 m.insert("vfix".into(), 1.into());
             });
+        }
+        // Вход в Шикимори, сделанный до того, как он стал частью аккаунта, тоже уходит в аккаунт (уступая более новым).
+        if self.vt("shikimori") == 0 && self.payload(app, "shikimori").is_some() {
+            self.edit(|m| { let vt = m.entry("vt").or_insert_with(|| json!({})); if !vt.is_object() { *vt = json!({}); } vt["shikimori"] = 1.into(); });
         }
         let st = self.st.lock().unwrap().clone();
         for svc in SERVICES {
@@ -347,6 +353,7 @@ async fn install(app: &AppHandle, svc: &str, plain: Option<Vec<u8>>) -> bool {
             }
             *app.state::<Manga>().comx_ready.lock().await = false;
         }
+        "shikimori" => app.state::<crate::shiki::Shiki>().install(v.as_ref()),
         _ => return false,
     }
     emit(&format!("installed:{svc}"));

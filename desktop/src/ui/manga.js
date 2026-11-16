@@ -182,6 +182,8 @@ function card(m, sub, progressFrac) {
   const p = progressFrac != null ? `<div class="progress"><i style="width:${Math.round(progressFrac * 100)}%"></i></div>` : '';
   return `<button class="card" data-manga="${esc(mid(m))}"><div class="poster">${cover(m.cover)}${p}</div><div class="t">${esc(m.title || 'Манга')}</div><div class="s">${esc(sub ?? m.meta ?? m.subtitle ?? '')}</div></button>`;
 }
+// Карточка для общего поиска на вкладке «Поиск».
+export const cardHTML = m => card(m);
 document.addEventListener('click', e => {
   const c = e.target.closest('[data-manga]'); if (!c) return;
   const m = known.get(c.dataset.manga); if (m) push({ view: 'mangaTitle', item: m, resume: !!c.dataset.resume });

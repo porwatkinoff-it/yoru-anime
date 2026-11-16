@@ -78,7 +78,15 @@
       forget: svc => invoke('account_forget', { svc }).catch(() => {}),
       sync: state => wrap(invoke('account_sync', { state }))
     },
-    onAccountChanged: on('yoruChanged')
+    onAccountChanged: on('yoruChanged'),
+    // Шикимори (src-tauri/src/shiki.rs): ключи приложения и токены остаются в Rust.
+    shiki: {
+      status: () => invoke('shiki_status'),
+      setKeys: (id, secret) => invoke('shiki_set_keys', { id, secret }),
+      login: () => invoke('shiki_login'),
+      logout: () => invoke('shiki_logout'),
+      call: (method, path, body) => invoke('shiki_call', { method, path, body: body ?? null })
+    }
   };
   // Закрытие окна и выход: Rust просит сохранить прогресс и настройки в файл, затем приложение закрывается.
   const dump = () => {
