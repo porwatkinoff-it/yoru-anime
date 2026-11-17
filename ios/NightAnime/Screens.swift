@@ -709,6 +709,9 @@ struct DownloadsView: View {
     @EnvironmentObject var store: AnimeStore
     @EnvironmentObject var downloads: DownloadCenter
     @State var playback: Playback?
+    // Следующая серия открывается только после того, как экран прошлой полностью закрылся:
+    // раньше скачанная серия стартовала поверх ещё закрывающегося плеера, и он зависал.
+    @State var upNext: (() -> Void)?
     var groups: [(AnimeItem, [DownloadItem])] {
         Dictionary(grouping: downloads.items, by: \.seriesId).values.map { ($0[0].item, $0.sorted { $0.episodeNumber < $1.episodeNumber }) }.sorted { $0.1.map(\.created).max()! > $1.1.map(\.created).max()! }
     }
@@ -769,7 +772,7 @@ struct DownloadsView: View {
         }
         .scrollContentBackground(.hidden)
         .navigationTitle("Загрузки").toolbarTitleDisplayMode(.inline)
-        .fullScreenCover(item: $playback) { value in NativePlayerView(playback: value) { done, next in finished(value, done: done, next: next) }.ignoresSafeArea() }
+        .fullScreenCover(item: $playback, onDismiss: runUpNext) { value in NativePlayerView(playback: value) { done, next in finished(value, done: done, next: next) }.ignoresSafeArea() }
         .onAppear {
             #if DEBUG
             if QA.has("--play-download"), let d = downloads.items.first(where: { $0.state == .done }) { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { play(d, in: [d]) } }
@@ -782,13 +785,16 @@ struct DownloadsView: View {
         let next = list.first { $0.episodeNumber > d.episodeNumber && $0.state == .done }
         playback = downloads.playback(d, hasNext: next != nil, store: store)
     }
+    func runUpNext() { guard let f = upNext else { return }; upNext = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: f) }
     func finished(_ value: Playback, done: Bool, next: Bool) {
+        // Серию запоминаем до «Удалять просмотренные»: после удаления её уже не найти в списке.
+        let current = downloads.items.first(where: { $0.id == value.episodeId })
         if done { store.markDone(value.episodeId); downloads.watched(value.episodeId)
-            if let d = downloads.items.first(where: { $0.id == value.episodeId }) { let item = d.item, n = Int(d.episodeNumber); Task { await ShikiAccount.shared.episodeDone(item, number: n) } } }
+            if let d = current { let item = d.item, n = Int(d.episodeNumber); Task { await ShikiAccount.shared.episodeDone(item, number: n) } } }
         Task { await store.sync() }
-        guard next, let current = downloads.items.first(where: { $0.id == value.episodeId }) ?? downloads.items.first(where: { $0.seriesId == downloads.items.first?.seriesId }) else { return }
+        guard next, let current else { return }
         let list = downloads.items.filter { $0.seriesId == current.seriesId && $0.state == .done }.sorted { $0.episodeNumber < $1.episodeNumber }
-        if let n = list.first(where: { $0.episodeNumber > current.episodeNumber }) { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { playback = downloads.playback(n, hasNext: list.contains { $0.episodeNumber > n.episodeNumber }, store: store) } }
+        if let n = list.first(where: { $0.episodeNumber > current.episodeNumber }) { upNext = { playback = downloads.playback(n, hasNext: list.contains { $0.episodeNumber > n.episodeNumber }, store: store) } }
     }
 }
 struct DownloadRow: View {
@@ -849,6 +855,9 @@ struct DetailView: View {
     @State var chooser: Chooser?
     @State var translations: [Translation] = []
     @State var playback: Playback?
+    // Следующая серия открывается только после того, как экран прошлой полностью закрылся:
+    // раньше скачанная серия стартовала поверх ещё закрывающегося плеера, и он зависал.
+    @State var upNext: (() -> Void)?
     @State var busy = true
     @State var status = ""
     @State var login = false
@@ -907,7 +916,7 @@ struct DetailView: View {
             .sheet(isPresented: $login) { LoginView() }
         }
         .sheet(isPresented: $login) { LoginView() }
-        .fullScreenCover(item: $playback) { value in NativePlayerView(playback: value) { done, wantsNext in finished(value, done: done, next: wantsNext) }.ignoresSafeArea() }
+        .fullScreenCover(item: $playback, onDismiss: runUpNext) { value in NativePlayerView(playback: value) { done, wantsNext in finished(value, done: done, next: wantsNext) }.ignoresSafeArea() }
         .overlay(alignment: .bottom) {
             if working && !status.isEmpty && chooser == nil {
                 HStack(spacing: 10) { ProgressView().tint(Night.text); Text(status).font(.system(size: 14, weight: .semibold)).foregroundStyle(Night.text).lineLimit(2) }
@@ -1077,8 +1086,9 @@ struct DetailView: View {
             if let ep = episodes.first(where: { $0.id == value.episodeId }) { let item = shown; Task { await ShikiAccount.shared.episodeDone(item, number: Int(ep.number)) } } }
         Task { await store.sync() }
         guard wantsNext, let ep = next(after: value.episodeId) else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { start(ep, auto: true) }
+        upNext = { start(ep, auto: true) }
     }
+    func runUpNext() { guard let f = upNext else { return }; upNext = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: f) }
     // MARK: Загрузки
     func downloadTapped(_ ep: Episode) {
         if let d = downloads.item(ep.id) { if d.state == .failed { downloads.retry(ep.id, store: store) }; return }

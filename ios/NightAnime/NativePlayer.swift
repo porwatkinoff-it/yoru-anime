@@ -35,6 +35,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     var waitingForFrame = true, frameBaseline: Int32 = -1, waitStarted = Date(), ticks = 0
     var ended = false, countdown = 0, countdownTimer: Timer?, errorShown = false, shownPlaying: Bool?
     var remoteTargets: [(MPRemoteCommand, Any)] = [], nowPlaying: [String: Any] = [:], reportedPlaying: Bool?
+    var video: PiPVideo?
     var compact: Bool { traitCollection.horizontalSizeClass == .compact || traitCollection.verticalSizeClass == .compact }
 
     init(_ p: Playback) { playback = p; super.init(nibName: nil, bundle: nil) }
@@ -97,7 +98,8 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         let guide = view.safeAreaLayoutGuide, side: CGFloat = 20
 
         // Верх: закрыть, название аниме и серия.
-        let close = iconButton("chevron.left", size: 22, label: "Закрыть") { [weak self] in self?.closePlayer() }
+        // Если закрытие уже идёт, а экран всё ещё висит, — убираем его принудительно, из плеера всегда можно выйти.
+        let close = iconButton("chevron.left", size: 22, label: "Закрыть") { [weak self] in guard let self else { return }; if self.isClosing { self.forceDismiss() } else { self.closePlayer() } }
         let parts = playback.title.components(separatedBy: " · ")
         titleLabel.text = parts.count > 1 ? parts.dropLast().joined(separator: " · ") : playback.title
         episodeLabel.text = parts.count > 1 ? parts.last : nil
@@ -152,7 +154,17 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         for v in [seekHint, loading] as [UIView] { v.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(v) }
         NSLayoutConstraint.activate([loading.centerXAnchor.constraint(equalTo: view.centerXAnchor), loading.centerYAnchor.constraint(equalTo: view.centerYAnchor), seekHint.centerYAnchor.constraint(equalTo: view.centerYAnchor), seekHint.centerXAnchor.constraint(equalTo: view.centerXAnchor)])
 
-        vlc.drawable = surface; vlc.delegate = self
+        // Кадры идут через слой, который умеет «картинку в картинке»; без него — прежний вывод VLC.
+        if let v = PiPVideo(player: vlc) {
+            video = v; surface.layer.addSublayer(v.layer)
+            v.isPaused = { [weak self] in !(self?.vlc.isPlaying ?? false) }
+            v.setPlaying = { [weak self] on in if on { self?.remotePlay() } else { self?.remotePause() } }
+            v.skip = { [weak self] s in self?.seek(by: Int32(s * 1000)) }
+            v.duration = { [weak self] in Double(self?.vlc.media?.length.intValue ?? 0) / 1000 }
+            v.started = { [weak self] in self?.cancelCountdown() }
+            v.stopped = { [weak self] restored in self?.pipStopped(restored: restored) }
+        } else { vlc.drawable = surface }
+        vlc.delegate = self
         UIApplication.shared.isIdleTimerDisabled = true
         startNowPlaying()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
@@ -160,6 +172,10 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(enteredBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(savePlace), name: UIApplication.willResignActiveNotification, object: nil)
         Task { await prepare() }
+    }
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        CATransaction.begin(); CATransaction.setDisableActions(true); video?.layer.frame = surface.bounds; CATransaction.commit()
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -242,6 +258,8 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
             setText(stateLabel, subtitleFile == nil ? "" : (subAttached ? "" : "Загрузка субтитров…"))
         }
         if !chrome.isHidden { refreshChrome() }
+        video?.sync(timeMs: vlc.time.intValue, playing: vlc.isPlaying, rate: vlc.rate)
+        if reportedPlaying != vlc.isPlaying { video?.invalidate() }
         if reportedPlaying != vlc.isPlaying || ticks % 10 == 0 { updateNowPlaying() }
         // «Следующая серия»: на титрах в конце и с отсчётом после окончания.
         setFloating(upNextButton, visible: playback.hasNext && length > 0 && (ended || length - now < Self.creditsWindow))
@@ -276,7 +294,12 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     func finishedEpisode() {
         ended = true; HistoryState.savePosition(playback.key, 0)
         hideWork?.cancel(); showPanel()
-        guard playback.hasNext else { return }
+        // В окошке PiP приложение в фоне — следующую серию предложим, когда вернутся в плеер.
+        guard playback.hasNext, video?.active != true else { return }
+        startCountdown()
+    }
+    func startCountdown() {
+        guard countdown == 0, !isClosing else { return }
         countdown = 10; upNextButton.configuration?.title = "Следующая серия · \(countdown)"
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
             guard let self, !self.isClosing, self.countdown > 0 else { t.invalidate(); return }
@@ -331,7 +354,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         on(c.skipForwardCommand) { [weak self] _ in self?.seek(by: 10_000) }
         on(c.skipBackwardCommand) { [weak self] _ in self?.seek(by: -10_000) }
         on(c.changePlaybackPositionCommand) { [weak self] e in if let e = e as? MPChangePlaybackPositionCommandEvent { self?.seek(to: Int32(e.positionTime * 1000)) } }
-        if playback.hasNext { on(c.nextTrackCommand) { [weak self] _ in self?.closePlayer(next: true) } }
+        if playback.hasNext { on(c.nextTrackCommand) { [weak self] _ in guard let self, self.video?.active != true else { return }; self.closePlayer(next: true) } }
         nowPlaying = [MPMediaItemPropertyTitle: episodeLabel.text ?? titleLabel.text ?? playback.title, MPMediaItemPropertyAlbumTitle: titleLabel.text ?? "", MPMediaItemPropertyArtist: "Yoru",
                       MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue]
         if episodeLabel.text != nil { nowPlaying[MPMediaItemPropertyArtist] = titleLabel.text }
@@ -375,12 +398,21 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     @objc func seekEnd() { let length = vlc.media?.length.intValue ?? 0; dragging = false; seek(to: Int32(Float(length) * slider.value)) }
     @objc func togglePanel() { cancelCountdown(); if chrome.isHidden || chrome.alpha < 1 { showPanel(); scheduleHide() } else { hidePanel() } }
     @objc func doubleTapSeek(_ g: UITapGestureRecognizer) { cancelCountdown(); seek(by: g.location(in: view).x < view.bounds.midX ? -10_000 : 10_000) }
-    // Ушли из приложения: место сохраняется, а идущая серия встаёт на паузу — без фонового режима iOS всё равно остановит плеер,
-    // а так видео не декодируется впустую перед этим и после возвращения продолжается с того же кадра.
+    // Ушли из приложения: место сохраняется. Если идущая серия ушла в окошко PiP — она продолжается,
+    // иначе (PiP выключен в настройках, экран заблокировали) встаёт на паузу и после возвращения идёт с того же кадра.
     @objc func enteredBackground() {
         guard !isClosing else { return }
         savePlace()
-        if vlc.isPlaying { vlc.pause(); showPanel() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, !self.isClosing, self.video?.active != true, UIApplication.shared.applicationState == .background else { return }
+            if self.vlc.isPlaying { self.vlc.pause(); self.showPanel() }
+        }
+    }
+    // Окошко PiP закрыли крестиком — пауза, как в YouTube; вернулись в приложение — досмотренная серия предлагает следующую.
+    func pipStopped(restored: Bool) {
+        guard !isClosing else { return }
+        if !restored { remotePause(); savePlace() }
+        else if ended && playback.hasNext { showPanel(); startCountdown() }
     }
     // Место сохраняется уже при потере фокуса: из переключателя приложений плеер могут закрыть, не уводя его в фон.
     @objc func savePlace() {
@@ -393,11 +425,17 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         // Засчитываем, если досмотрено 90% или (после середины) осталось ≤ 3 минут — эндинг и превью.
         let done = next || ended || (l > 0 && t > 0 && (Double(t) >= Double(l) * 0.9 || (Double(t) >= Double(l) * 0.5 && l - t <= 180_000)))
         if resumed && !ended && t > 0 { HistoryState.savePosition(playback.key, Int(t)); saveFraction(t, l) }
-        isClosing = true; timer?.invalidate(); countdownTimer?.invalidate(); hideWork?.cancel(); vlc.stop(); vlc.drawable = nil
+        isClosing = true; timer?.invalidate(); countdownTimer?.invalidate(); hideWork?.cancel(); video?.stop(); vlc.stop(); if video == nil { vlc.drawable = nil }
         stopNowPlaying()
         UIApplication.shared.isIdleTimerDisabled = false; if let file = subtitleFile { try? FileManager.default.removeItem(at: file) }
         if UIDevice.current.userInterfaceIdiom == .phone, let scene = view.window?.windowScene { scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) }
         onClose?(done, next)
+        // Страховка: если экран плеера почему-то остался, через пару секунд закрываем его сами.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.forceDismiss() }
+    }
+    func forceDismiss() {
+        guard view.window != nil, let host = presentingViewController, host.presentedViewController?.isBeingDismissed != true else { return }
+        host.dismiss(animated: true)
     }
     override func viewDidDisappear(_ animated: Bool) { super.viewDidDisappear(animated); if !isClosing { closePlayer() } }
     deinit { timer?.invalidate(); countdownTimer?.invalidate() }
