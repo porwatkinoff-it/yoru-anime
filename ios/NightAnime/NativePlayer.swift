@@ -175,7 +175,7 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        CATransaction.begin(); CATransaction.setDisableActions(true); video?.layer.frame = surface.bounds; CATransaction.commit()
+        CATransaction.begin(); CATransaction.setDisableActions(true); video?.layout(surface.bounds); CATransaction.commit()
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -214,6 +214,10 @@ final class PlayerController: UIViewController, VLCMediaPlayerDelegate {
         let media = VLCMedia(url: sources[min(sourceIndex, sources.count - 1)])
         media.addOption(":http-user-agent=NightAnime/1.0")
         media.addOption(":network-caching=1800")
+        #if DEBUG
+        // В симуляторе VideoToolbox по умолчанию не работает (нужен аппаратный декодер); так он отдаёт CVPX-кадры, как на iPhone.
+        if QA.has("--vt-soft") { media.addOption(":no-videotoolbox-hw-decoder-only") }
+        #endif
         vlc.media = media; waitForFrame(); vlc.play()
         scheduleHide()
     }

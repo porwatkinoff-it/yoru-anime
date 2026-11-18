@@ -28,6 +28,10 @@ final class PiPVideo: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, 
     // Состояние кадров меняется в потоке вывода VLC.
     private let mutex = NSLock()
     private var pool: CVPixelBufferPool?, frames: [Frame] = [], scratch: UnsafeMutableRawPointer?, scratchPlane = 0, height709 = false
+    // Видимый размер кадра (без выравнивания декодера). Буфер чуть выше (см. pipFormat), поэтому слой
+    // растягивается под настоящие пропорции видео, а не под пропорции буфера. Только главный поток.
+    private var visible = CGSize.zero, area = CGRect.zero
+    private weak var player: VLCMediaPlayer?
 
     var isPaused: () -> Bool = { true }
     var setPlaying: (Bool) -> Void = { _ in }
@@ -45,6 +49,7 @@ final class PiPVideo: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, 
         var tb: CMTimebase?
         CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault, sourceClock: CMClockGetHostTimeClock(), timebaseOut: &tb)
         timebase = tb
+        self.player = player
         super.init()
         layer.videoGravity = .resizeAspect; layer.backgroundColor = UIColor.black.cgColor
         if let tb { CMTimebaseSetTime(tb, time: .zero); CMTimebaseSetRate(tb, rate: 0); layer.controlTimebase = tb }
@@ -135,9 +140,17 @@ final class PiPVideo: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, 
 
     // MARK: Управление из плеера (главный поток)
     func sync(timeMs: Int32, playing: Bool, rate: Float) {
+        if let size = player?.videoSize, size.width > 0, size.height > 0, size != visible { visible = size; layout(area) }
         guard let timebase else { return }
         CMTimebaseSetTime(timebase, time: CMTime(value: CMTimeValue(max(0, timeMs)), timescale: 1000))
         CMTimebaseSetRate(timebase, rate: playing ? Float64(rate) : 0)
+    }
+    func layout(_ bounds: CGRect) {
+        area = bounds
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        if visible.width > 0, visible.height > 0 { layer.videoGravity = .resize; layer.frame = AVMakeRect(aspectRatio: visible, insideRect: bounds) }
+        else { layer.videoGravity = .resizeAspect; layer.frame = bounds }
+        CATransaction.commit()
     }
     func invalidate() { pip?.invalidatePlaybackState() }
     func stop() { if active { pip?.stopPictureInPicture() } }
@@ -167,7 +180,11 @@ final class PiPVideo: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, 
 private let pipFormat: FormatCB = { opaque, chroma, width, height, pitches, lines in
     guard let opaque, let ctx = opaque.pointee, let chroma, let width, let height, let pitches, let lines else { return 0 }
     let ref = Unmanaged<PiPVideo>.fromOpaque(ctx)
-    let w = (width.pointee + 1) & ~1, h = (height.pointee + 1) & ~1
+    // Высота на 2 строки больше исходной. С аппаратным декодированием (VideoToolbox) кадр приходит как CVPX.
+    // Если вывод не больше исходника, VLC пытается впечатать субтитры прямо в CVPX и теряет их, а нижние строки
+    // выравнивания (1080 → 1088) остаются пустыми и видны зелёной полосой. Чуть больший вывод переключает VLC на
+    // наложение субтитров уже в NV12 и растягивает только видимую часть кадра на весь буфер.
+    let w = (width.pointee + 1) & ~1, h = ((height.pointee + 1) & ~1) + 2
     guard w > 0, h > 0, w <= 8192, h <= 8192, let (p0, p1) = ref.takeUnretainedValue().configure(width: Int(w), height: Int(h)) else { return 0 }
     _ = ref.retain() // отпускается в pipCleanup, когда VLC закроет вывод
     for (i, c) in "NV12".utf8.enumerated() { chroma[i] = CChar(bitPattern: c) }
