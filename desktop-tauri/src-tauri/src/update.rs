@@ -47,7 +47,7 @@ pub async fn check_update(app: AppHandle, y: State<'_, Yoru>) -> Result<Value, S
     if !res.status().is_success() { return Err(format!("GitHub не ответил ({})", res.status().as_u16())); }
     let r: Value = res.json().await.map_err(|e| e.to_string())?;
     let version = r["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
-    let current = app.package_info().version.to_string();
+    let current = crate::version(app);
     let assets = r["assets"].as_array().cloned().unwrap_or_default();
     let asset = asset_for(&assets);
     let native = cfg!(target_os = "macos") && rosetta() && asset.is_some();

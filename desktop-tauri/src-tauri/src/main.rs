@@ -186,7 +186,15 @@ fn show_file(file: String) {
 }
 
 #[tauri::command]
-fn version(app: AppHandle) -> String { app.package_info().version.to_string() }
+fn version(app: AppHandle) -> String {
+    let version = &app.package_info().version;
+    let build = version.build.as_str();
+    // Четвёртый номер выпуска хранится как числовой build metadata в SemVer Tauri.
+    if version.pre.is_empty() && !build.is_empty() && build.bytes().all(|byte| byte.is_ascii_digit()) {
+        return format!("{}.{}.{}.{}", version.major, version.minor, version.patch, build);
+    }
+    version.to_string()
+}
 
 static FULL: AtomicBool = AtomicBool::new(false);
 
