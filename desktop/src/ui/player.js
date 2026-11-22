@@ -215,38 +215,61 @@ class Player {
     const v = this.v, AHEAD = 0.12, AFTER = 0.06, EPS = 0.002;
     // gen отсекает запросы кадра, ставшие лишними после перемотки или паузы; drawn — время libass на холсте.
     let pending = true, gen = 0, timer = 0, meta = null, drawn = NaN, kicked = 0;
+    let fallbackTime = -Infinity;
     const want = force => {
       if (s._destroyed || (pending && !force)) return;
       pending = true; const g = ++gen;
       v.requestVideoFrameCallback((_now, m) => { if (g === gen) frame(m); });
     };
+    const draw = m => {
+      const t = m.mediaTime + s.timeOffset, [prev, next] = line.cut(t);
+      const moving = line.moving(t);
+      // Пока граница не пройдена и ничего не движется, на холсте та же картинка (EPS — запас на округление в libass).
+      const inside = x => x - EPS > prev && x + EPS < next;
+      if (moving || !(inside(drawn) && inside(t))) { drawn = t; s.manualRender(m); }
+      return { t, prev, next, moving };
+    };
     const frame = m => {
       pending = false; if (s._destroyed) return;
       meta = m; clearTimeout(timer);
-      const t = m.mediaTime + s.timeOffset, [prev, next] = line.cut(t);
-      // Пока граница не пройдена и ничего не движется, на холсте та же картинка (EPS — запас на округление в libass).
-      const inside = x => x - EPS > prev && x + EPS < next;
-      if (line.moving(t) || !(inside(drawn) && inside(t))) { drawn = t; s.manualRender(m); }
-      if (line.moving(t) || next - t < AHEAD || t - prev < AFTER) want();
+      // Запоздавший кадр не должен вернуть уже сменившуюся реплику.
+      const { t, prev, next, moving } = draw(m.mediaTime < fallbackTime ? { ...m, mediaTime: fallbackTime } : m);
+      if (moving || next - t < AHEAD || t - prev < AFTER) want();
       // Сразу после перемотки или смены скорости часы видео ещё догоняют — спим не дольше полсекунды.
       else if (!v.paused && next < Infinity) timer = setTimeout(() => want(), Math.min((next - t - AHEAD) / v.playbackRate * 1000, performance.now() - kicked < 500 ? 500 : Infinity));
     };
     // Первый кадр JASSUB запрашивает сам, когда готов воркер.
     s._handleRVFC = m => { if (!gen) frame(m); };
+    // WebKit может задержать уведомление о кадре, хотя видео продолжает играть.
+    const syncTime = () => {
+      if (s._destroyed || !s.renderer || v.paused || v.seeking || v.readyState < 2 || !v.videoWidth) return;
+      const time = v.currentTime;
+      if (meta && time - meta.mediaTime < 0.25) return;
+      fallbackTime = time;
+      const size = meta || { width: v.videoWidth, height: v.videoHeight };
+      draw({ ...size, mediaTime: time });
+    };
     // Перемотка, пауза, скорость, задержка, возврат в окно: перерисовать сейчас и заново решить, когда нужен кадр.
     const kick = () => {
       clearTimeout(timer);
       if (s._destroyed || !s.renderer || !v.videoWidth) return;
-      kicked = performance.now(); drawn = NaN;
-      if (v.paused) {
-        const size = meta || { width: v.videoWidth, height: v.videoHeight };
-        s.manualRender({ ...size, mediaTime: v.currentTime }, true);
-      }
+      kicked = performance.now(); drawn = NaN; fallbackTime = -Infinity;
+      const size = meta || { width: v.videoWidth, height: v.videoHeight };
+      meta = null;
+      if (v.paused) s.manualRender({ ...size, mediaTime: v.currentTime }, true);
       want(true);
     };
     const shown = () => { if (!document.hidden) kick(); };
     document.addEventListener('visibilitychange', shown);
-    return { kick, stop: () => { clearTimeout(timer); document.removeEventListener('visibilitychange', shown); } };
+    v.addEventListener('timeupdate', syncTime);
+    return {
+      kick,
+      stop: () => {
+        clearTimeout(timer);
+        document.removeEventListener('visibilitychange', shown);
+        v.removeEventListener('timeupdate', syncTime);
+      }
+    };
   }
 
   // Значок загрузки: при открытии, перемотке и смене качества, пока видео ждёт данных.
@@ -271,7 +294,7 @@ class Player {
     v.addEventListener('seeked', () => this.save());
     v.addEventListener('progress', () => this.paintBuffer());
     v.addEventListener('ended', () => this.ended());
-    for (const e of ['play', 'pause', 'seeked', 'ratechange']) v.addEventListener(e, () => this.pace?.kick());
+    for (const e of ['play', 'playing', 'pause', 'seeked', 'ratechange']) v.addEventListener(e, () => this.pace?.kick());
     v.addEventListener('volumechange', () => { D.S.set('volume', v.volume); D.S.set('muted', v.muted); el.querySelector('[data-a=mute]').innerHTML = v.muted || !v.volume ? svg.mute : svg.vol; });
     v.addEventListener('click', () => this.toggle());
     v.addEventListener('dblclick', () => this.fullscreen());
