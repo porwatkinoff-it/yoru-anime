@@ -22,21 +22,37 @@ function measure(data) {
 }
 
 const frames = [];
+const videoPrototype = HTMLVideoElement.prototype;
+const requestFrame = videoPrototype.requestVideoFrameCallback;
+const resumeNotificationsAt = 8;
+let delayedFrames = 0;
+videoPrototype.requestVideoFrameCallback = function (callback) {
+  const forward = (now, metadata) => {
+    if (this.currentTime >= 2 && this.currentTime < resumeNotificationsAt) {
+      delayedFrames++;
+      requestFrame.call(this, forward);
+      return;
+    }
+    callback(now, metadata);
+  };
+  return requestFrame.call(this, forward);
+};
+
 const Renderer = window.JASSUB;
 window.JASSUB = class extends Renderer {
   constructor(options) {
     super(options);
     this.ready = this.ready.then(() => {
       const original = this.renderer;
-      const tested = new Set();
+      let lastSection;
       this.renderer = new Proxy(original, {
         get: (target, key) => {
           if (key !== '_draw') return Reflect.get(target, key);
           return async (time, repaint) => {
             await target._draw(time, repaint);
             const section = time >= 5 ? 'second' : 'first';
-            if (tested.has(section)) return;
-            tested.add(section);
+            if (lastSection === section) return;
+            lastSection = section;
             const bitmap = await target._drawCapture(time);
             frames.push({ section, time, ...measure(bitmap.data) });
           };
@@ -67,6 +83,8 @@ try {
   const second = frames[1];
   expect(second.section === 'second' && second.white > 100 && second.green > 100,
          `Second ASS caption is blank or lost its style: ${JSON.stringify(second)}`);
+  expect(delayedFrames > 0 && second.time < 6.25 && video.currentTime < resumeNotificationsAt,
+         `The caption waited for frame callbacks: ${JSON.stringify(second)}`);
 
   video.pause();
   document.querySelector('[data-a=subs]').click();
@@ -75,10 +93,14 @@ try {
   document.querySelector('[data-on="1"]').click();
   await until(() => frames.length >= 3, 12000, 'No subtitle frame when enabled on pause');
   expect(frames[2].green > 100, 'The paused caption is blank');
-  video.currentTime = 2;
+  video.currentTime = 2.4;
   await until(() => frames.length >= 4, 12000, 'No subtitle frame after seeking on pause');
   expect(frames[3].yellow > 100, 'Seeking kept the old caption');
-  await report(JSON.stringify(frames), true);
+  await video.play();
+  await until(() => frames.length >= 5, 12000, 'No subtitle frame after resuming playback');
+  expect(frames[4].green > 100 && frames[4].time < 6.25 && video.currentTime < resumeNotificationsAt,
+         'Resuming playback kept the old caption');
+  await report(JSON.stringify({ delayedFrames, frames }), true);
 } catch (error) {
   await report(String(error) + '\n' + JSON.stringify(frames), false);
 }
