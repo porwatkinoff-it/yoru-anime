@@ -1,0 +1,44 @@
+name: Subtitle smoke test
+on:
+  push:
+    branches: [qa-subtitles-2.3.4.1]
+permissions:
+  contents: read
+jobs:
+  render:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop-tauri/src-tauri -> target
+          key: subtitle-smoke
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev xvfb xauth gstreamer1.0-libav
+      - working-directory: desktop
+        run: |
+          npm ci --ignore-scripts
+          node build.mjs
+      - working-directory: desktop-tauri
+        run: |
+          npm ci
+          npx tauri build --debug --no-bundle
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a timeout 80s desktop-tauri/src-tauri/target/debug/Yoru
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "desktop-tauri/src-tauri/target/debug/Yoru.exe" -PassThru -NoNewWindow
+          if (!$p.WaitForExit(80000)) { Stop-Process -Id $p.Id; throw "Subtitle smoke test timed out" }
+          exit $p.ExitCode

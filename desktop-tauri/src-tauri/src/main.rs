@@ -196,6 +196,12 @@ fn version(app: AppHandle) -> String {
     version.to_string()
 }
 
+#[tauri::command]
+fn qa_report(app: AppHandle, message: String, success: bool) {
+    println!("{message}");
+    app.exit(if success { 0 } else { 1 });
+}
+
 static FULL: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
@@ -378,7 +384,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            api, login, logout, signed_in, text, server_speed, open_external, show_file, version, fullscreen, download, save_data,
+            api, login, logout, signed_in, text, server_speed, open_external, show_file, version, fullscreen, download, save_data, qa_report,
             update::check_update, update::install_update,
             dl::has_battery, dl::dl_list, dl::dl_enqueue, dl::dl_retry, dl::dl_remove, dl::dl_text, dl::dl_space,
             manga::manga_lib, manga::manga_lib_status, manga::manga_lib_login, manga::manga_lib_logout,
