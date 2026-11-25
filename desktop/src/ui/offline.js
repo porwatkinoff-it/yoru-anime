@@ -100,19 +100,6 @@ export function cleanWatched() {
 }
 
 // ---------- Просмотр скачанной серии ----------
-// SRT и VTT переводим в ASS, чтобы субтитры рисовал тот же JASSUB.
-function toAss(text) {
-  const t = s => { const m = /(\d+):(\d+):(\d+)[.,](\d+)/.exec(s) || /()(\d+):(\d+)[.,](\d+)/.exec(s); if (!m) return '0:00:00.00'; return `${+m[1] || 0}:${m[2].padStart(2, '0')}:${m[3].padStart(2, '0')}.${m[4].padEnd(3, '0').slice(0, 2)}`; };
-  const cues = [];
-  for (const block of text.replace(/\r/g, '').split(/\n\n+/)) {
-    const lines = block.split('\n'), i = lines.findIndex(l => l.includes('-->'));
-    if (i < 0) continue;
-    const [a, b] = lines[i].split('-->');
-    const body = lines.slice(i + 1).join('\\N').replace(/<[^>]+>/g, '');
-    if (body.trim()) cues.push(`Dialogue: 0,${t(a)},${t(b)},Default,,0,0,0,,${body}`);
-  }
-  return `[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Liberation Sans,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2.5,1,2,60,60,40,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${cues.join('\n')}\n`;
-}
 export function play(d) {
   const it = D.item(d.series);
   const ep = { id: d.id, title: d.episodeTitle, number: d.episodeNumber };
@@ -124,7 +111,7 @@ export function play(d) {
     options: [{ id: 'local', url: window.yoru.dlUrl ? window.yoru.dlUrl(d.video) : 'yoru://dl/' + encodeURIComponent(d.video), height: d.height, alternatives: [] }],
     downloads: [], offline: true,
     subtitles: d.subtitles || null,
-    loadSubs: async () => { const r = await window.yoru.dl.text(d.id); if (r.error) throw new Error(r.error); return d.subtitles.endsWith('.ass') ? r.data : toAss(r.data); },
+    loadSubs: async () => { const r = await window.yoru.dl.text(d.id); if (r.error) throw new Error(r.error); return r.data; },
     title: it.title, episodeTitle: ep.title, key: 'position-' + t.id, episodeId: ep.id
   }, {
     next: next ? next.episodeTitle : null,

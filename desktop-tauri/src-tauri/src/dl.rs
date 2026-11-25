@@ -127,9 +127,7 @@ async fn fetch_subs(http: &reqwest::Client, url: &str, c: &Notify) -> Result<(St
     let res = cancellable(c, http.get(u).send()).await?.map_err(|_| E::Net)?;
     if !res.status().is_success() { return Err(E::Status(res.status().as_u16())); }
     let b = cancellable(c, res.bytes()).await?.map_err(net_err)?;
-    if b.len() > 8 << 20 { return Err(E::BadSubs); }
-    let mut t = String::from_utf8_lossy(&b).into_owned();
-    if t.contains('\u{FFFD}') { t = encoding_rs::WINDOWS_1251.decode(&b).0.into_owned(); }
+    let t = crate::text_body::decode(&b).map_err(|_| E::BadSubs)?;
     if t.contains("[Events]") { return Ok((t, "ass")); }
     if t.contains("-->") { let vtt = t.trim_start_matches('\u{FEFF}').starts_with("WEBVTT"); return Ok((t, if vtt { "vtt" } else { "srt" })); }
     Err(E::BadSubs)
@@ -296,7 +294,7 @@ pub async fn dl_text(app: AppHandle, id: Value) -> Result<String, String> {
     let dl = app.state::<Dl>();
     let name = dl.get(key(&id)).map(|d| text(&d["subtitles"])).filter(|s| !s.is_empty()).ok_or("Нет субтитров")?;
     let b = fs::read(dl.file(&name)).map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&b).into_owned())
+    crate::text_body::decode(&b).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

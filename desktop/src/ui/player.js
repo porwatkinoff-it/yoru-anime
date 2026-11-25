@@ -1,6 +1,7 @@
 // Плеер: видео с запасными ссылками, качество, скорость, субтитры ASS, пропуск заставки и следующая серия.
 import * as D from './data.js';
 import * as Sv from './servers.js';
+import { toAss } from './subtitles.js';
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
 const SKIP = 88, NEXT_AT = 90, COUNTDOWN = 10;
@@ -176,27 +177,37 @@ class Player {
   }
   async attachSubs() {
     if (!this.pb.subtitles || this.subs || !this.subsOn) return;
+    let renderer;
     try {
       if (!this.subText) {
-        if (this.pb.loadSubs) this.subText = await this.pb.loadSubs();
-        else { const r = await window.yoru.text(this.pb.subtitles); if (r.error) throw new Error(r.error); this.subText = r.data; }
+        if (this.pb.loadSubs) this.subText = toAss(await this.pb.loadSubs());
+        else { const r = await window.yoru.text(this.pb.subtitles); if (r.error) throw new Error(r.error); this.subText = toAss(r.data); }
       }
       if (this.closed || this.subs || !this.subsOn) return;
       // Пути — абсолютные: воркер лежит в vendor/ и относительные считал бы от себя.
       const vendor = f => new URL('vendor/' + f, location.href).href;
-      this.subs = new window.JASSUB({
+      this.subs = renderer = new window.JASSUB({
         video: this.v, subContent: this.subText,
         workerUrl: vendor('jassub-worker.js'), wasmUrl: vendor('jassub-worker.wasm'), modernWasmUrl: vendor('jassub-worker-modern.wasm'),
-        availableFonts: { 'liberation sans': vendor('default.woff2') }, fallbackFont: 'liberation sans',
+        // Первый кадр может быть единственным для статичной реплики. Загружаем шрифт до него.
+        fonts: [vendor('default.woff2')], defaultFont: 'liberation sans',
+        queryFonts: typeof window.queryLocalFonts === 'function' ? 'local' : false,
         // На Retina холст был бы в 1,5–2 раза выше видео; 1080 строк хватает для резких субтитров.
         maxRenderHeight: 1080,
         timeOffset: this.subDelay
       });
       const line = assTimeline(this.subText);
-      if (line) this.pace = this.paceSubs(this.subs, line);
-    } catch (e) { this.flash('Субтитры не загрузились'); console.error(e); }
+      if (line) this.pace = this.paceSubs(renderer, line);
+      await renderer.ready;
+      if (this.subs === renderer && this.v.paused) this.pace?.kick();
+    } catch (e) {
+      if (this.subs !== renderer && (renderer || this.subs)) return;
+      this.detachSubs();
+      if (!this.closed && this.subsOn) this.flash('Субтитры не загрузились');
+      console.error(e);
+    }
   }
-  detachSubs() { this.pace?.stop(); this.pace = null; try { this.subs?.destroy(); } catch {} this.subs = null; }
+  detachSubs() { this.pace?.stop(); this.pace = null; this.subs?.destroy().catch(console.error); this.subs = null; }
   // JASSUB зовёт libass на каждом кадре видео, даже когда на экране та же строка. Кадры смотрим
   // только около границ строк и пока идёт анимация, рисуем — когда граница пройдена, а между
   // границами ждём таймером до следующей.
@@ -225,9 +236,12 @@ class Player {
     // Перемотка, пауза, скорость, задержка, возврат в окно: перерисовать сейчас и заново решить, когда нужен кадр.
     const kick = () => {
       clearTimeout(timer);
-      if (s._destroyed || !meta) return;
+      if (s._destroyed || !s.renderer || !v.videoWidth) return;
       kicked = performance.now(); drawn = NaN;
-      if (v.paused) s.manualRender({ ...meta, mediaTime: v.currentTime });
+      if (v.paused) {
+        const size = meta || { width: v.videoWidth, height: v.videoHeight };
+        s.manualRender({ ...size, mediaTime: v.currentTime }, true);
+      }
       want(true);
     };
     const shown = () => { if (!document.hidden) kick(); };

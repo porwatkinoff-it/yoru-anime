@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Yoru",
   "mainBinaryName": "Yoru",
-  "version": "2.3.4",
+  "version": "2.3.4+1",
   "identifier": "com.resvvt.yoruanime",
   "build": {
     "frontendDist": "../dist-ui",
@@ -37,6 +37,7 @@
     ],
     "macOS": {
       "signingIdentity": "-",
+      "bundleVersion": "2.3.4.1",
       "minimumSystemVersion": "11.0"
     },
     "windows": {

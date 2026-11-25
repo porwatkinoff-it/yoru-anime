@@ -6,6 +6,7 @@ mod account;
 mod dl;
 mod manga;
 mod shiki;
+mod text_body;
 #[cfg(not(target_os = "macos"))]
 mod migrate;
 mod update;
@@ -137,7 +138,8 @@ async fn text(y: State<'_, Yoru>, url: String) -> Result<String, String> {
     if u.scheme() != "https" && u.scheme() != "http" { return Err("Неверная ссылка".into()); }
     let res = y.http.get(u).timeout(Duration::from_secs(60)).send().await.map_err(|e| e.to_string())?;
     if !res.status().is_success() { return Err(format!("HTTP {}", res.status().as_u16())); }
-    res.text().await.map_err(|e| e.to_string())
+    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
+    text_body::decode(&bytes).map_err(|e| e.to_string())
 }
 
 // Скорость видеосервера: первые 4 МБ одного и того же файла (как в Android- и iOS-версиях).
@@ -186,7 +188,15 @@ fn show_file(file: String) {
 }
 
 #[tauri::command]
-fn version(app: AppHandle) -> String { app.package_info().version.to_string() }
+fn version(app: AppHandle) -> String {
+    let version = &app.package_info().version;
+    let build = version.build.as_str();
+    // Четвёртый номер выпуска хранится как числовой build metadata в SemVer Tauri.
+    if version.pre.is_empty() && !build.is_empty() && build.bytes().all(|byte| byte.is_ascii_digit()) {
+        return format!("{}.{}.{}.{}", version.major, version.minor, version.patch, build);
+    }
+    version.to_string()
+}
 
 static FULL: AtomicBool = AtomicBool::new(false);
 

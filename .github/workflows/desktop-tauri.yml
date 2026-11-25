@@ -1,6 +1,4 @@
-# Сборка Yoru для компьютеров на Rust (Tauri): Windows, Linux и Mac Intel.
-# Mac Apple Silicon собирается локально. Файлы называются так же, как у Electron-версии 2.0.x,
-# чтобы её автообновление находило новую версию.
+# Сборка Yoru для Windows, Linux и обеих архитектур macOS.
 name: Desktop (Tauri)
 
 on:
@@ -30,6 +28,10 @@ jobs:
             name: mac-x64
             bundles: app,dmg
             target: x86_64-apple-darwin
+          - os: macos-latest
+            name: mac-arm64
+            bundles: app,dmg
+            target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -77,6 +79,7 @@ jobs:
         shell: bash
         run: |
           V=$(node -p "require('./desktop-tauri/src-tauri/tauri.conf.json').version")
+          V=${V/+/.}
           B=desktop-tauri/src-tauri/target/${{ matrix.target }}/release/bundle
           mkdir -p out
           case "${{ matrix.name }}" in
@@ -84,8 +87,8 @@ jobs:
             linux-x86_64) cp "$B"/appimage/*.AppImage "out/Yoru-Anime-$V-linux-x86_64.AppImage"
                           cp "$B"/deb/*.deb "out/Yoru-Anime-$V-linux-amd64.deb" ;;
             linux-arm64)  cp "$B"/appimage/*.AppImage "out/Yoru-Anime-$V-linux-arm64.AppImage" ;;
-            mac-x64)      ditto -c -k --keepParent "$B/macos/Yoru.app" "out/Yoru-Anime-$V-mac-x64.zip"
-                          cp "$B"/dmg/*.dmg "out/Yoru-Anime-$V-mac-x64.dmg" ;;
+            mac-*)        ditto -c -k --keepParent "$B/macos/Yoru.app" "out/Yoru-Anime-$V-${{ matrix.name }}.zip"
+                          cp "$B"/dmg/*.dmg "out/Yoru-Anime-$V-${{ matrix.name }}.dmg" ;;
           esac
           ls -la out
 
