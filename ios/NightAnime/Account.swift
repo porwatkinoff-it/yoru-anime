@@ -3,6 +3,8 @@ import UIKit
 import CryptoKit
 import CommonCrypto
 import Network
+import AVFoundation
+import VisionKit
 
 // Аккаунт Yoru: своя регистрация по логину и паролю на сервере yoru-sync (Proxmox).
 // В аккаунте лежат история, избранное, места в сериях, чтение манги, список загрузок и входы в сервисы.
@@ -36,6 +38,22 @@ enum YoruCrypto {
 }
 
 struct YoruDevice: Identifiable { let id: String; let name: String; let last: Date; let current: Bool }
+
+struct YoruLoginCode {
+    let id: String
+    let key: Data
+    var shortCode: String { String(id.prefix(6)).uppercased() }
+
+    init?(_ value: String) {
+        guard value.utf8.count <= 110 else { return nil }
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts[0] == "yoru-pair", parts[1] == "v1",
+              parts[2].count == 32, parts[2].allSatisfy({ "0123456789abcdef".contains($0) }),
+              let key = Data(base64Encoded: String(parts[3])), key.count == 32 else { return nil }
+        id = String(parts[2])
+        self.key = key
+    }
+}
 
 @MainActor final class YoruAccount: ObservableObject {
     static let shared = YoruAccount()
@@ -163,6 +181,19 @@ struct YoruDevice: Identifiable { let id: String; let name: String; let last: Da
         let k = await YoruCrypto.keys(password, salt: s)
         let j = try await call("/v1/login", ["login": who, "auth": k.auth.base64EncodedString(), "device": Self.deviceName], auth: false)
         await signedIn(j, enc: k.enc)
+    }
+    func inspectLoginCode(_ code: YoruLoginCode) async throws -> String {
+        guard logged, enc?.count == 32 else { throw APIError(message: "Войдите в аккаунт Yoru заново.") }
+        let j = try await call("/v1/qr/status", ["id": code.id])
+        guard let device = j["device"] as? String, !device.isEmpty else { throw APIError(message: "Сервер не вернул имя устройства.") }
+        return device
+    }
+    func approveLoginCode(_ code: YoruLoginCode) async throws {
+        // В QR находится одноразовый ключ передачи. Сервер получает только зашифрованный ключ хранилища.
+        guard logged, let enc, enc.count == 32, let sealed = YoruCrypto.seal(enc, code.key) else {
+            throw APIError(message: "Войдите в аккаунт Yoru заново.")
+        }
+        _ = try await call("/v1/qr/approve", ["id": code.id, "sealedKey": sealed])
     }
     func forgot(_ who: String) async throws -> String {
         let j = try await call("/v1/forgot", ["login": who], auth: false)
@@ -396,6 +427,133 @@ struct YoruAccountCard: View {
     }
 }
 
+private struct YoruQRApprovalView: View {
+    @ObservedObject var account: YoruAccount
+    @Environment(\.dismiss) private var dismiss
+    @State private var code: YoruLoginCode?
+    @State private var device: String?
+    @State private var error: String?
+    @State private var reading = false
+    @State private var working = false
+    @State private var approved = false
+    @State private var attempt = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Вход по QR-коду").font(.title2.bold())
+                Spacer()
+                Button("Закрыть") { dismiss() }.buttonStyle(PillStyle())
+            }
+            if approved {
+                Label("Вход подтверждён", systemImage: "checkmark.circle").foregroundStyle(Night.scoreHigh)
+            } else if let code, let device {
+                Text("Устройство «\(device)» хочет войти в аккаунт «\(account.login)».")
+                Text("Сверьте код на экране устройства: \(code.shortCode).").foregroundStyle(Night.meta)
+                Button("Подтвердить вход") { approve(code) }
+                    .buttonStyle(PillStyle(primary: true, busy: working)).disabled(working)
+            } else if reading {
+                Text("Наведите камеру на QR-код входа из Yoru на компьютере или ТВ.").foregroundStyle(Night.meta)
+                YoruQRScanner(scan: received, fail: { message in reading = false; error = message })
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            } else if error == nil {
+                ProgressView(working ? "Проверяем QR-код…" : "Открываем камеру…")
+            }
+            if let error {
+                Text(error).font(.callout).foregroundStyle(.red)
+                Button("Сканировать заново") {
+                    code = nil; device = nil; self.error = nil; attempt += 1
+                }.buttonStyle(PillStyle()).disabled(working)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(20).foregroundStyle(Night.text).background(NightBackground())
+        .task(id: attempt) { await startCamera() }
+        .interactiveDismissDisabled(working)
+    }
+
+    private func startCamera() async {
+        guard DataScannerViewController.isSupported else {
+            error = "Сканирование QR-кодов недоступно на этом устройстве."
+            return
+        }
+        guard await AVCaptureDevice.requestAccess(for: .video) else {
+            error = "Разрешите Yoru доступ к камере в настройках iPhone."
+            return
+        }
+        guard DataScannerViewController.isAvailable else {
+            error = "Камера сейчас недоступна."
+            return
+        }
+        reading = true
+    }
+
+    private func received(_ value: String) {
+        guard reading else { return }
+        reading = false
+        guard let scanned = YoruLoginCode(value) else { error = "Это не QR-код входа Yoru."; return }
+        code = scanned; working = true
+        Task {
+            defer { working = false }
+            do { device = try await account.inspectLoginCode(scanned) }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+
+    private func approve(_ code: YoruLoginCode) {
+        error = nil; working = true
+        Task {
+            defer { working = false }
+            do { try await account.approveLoginCode(code); approved = true; self.code = nil }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
+private struct YoruQRScanner: UIViewControllerRepresentable {
+    let scan: (String) -> Void
+    let fail: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(scan: scan, fail: fail) }
+    func makeUIViewController(context: Context) -> DataScannerViewController {
+        let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])])
+        scanner.delegate = context.coordinator
+        DispatchQueue.main.async {
+            if scanner.delegate != nil {
+                do { try scanner.startScanning() }
+                catch { context.coordinator.fail("Не удалось открыть сканер QR-кодов.") }
+            }
+        }
+        return scanner
+    }
+    func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {}
+    static func dismantleUIViewController(_ scanner: DataScannerViewController, coordinator: Coordinator) {
+        scanner.delegate = nil
+        scanner.stopScanning()
+    }
+
+    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        let scan: (String) -> Void
+        let fail: (String) -> Void
+        init(scan: @escaping (String) -> Void, fail: @escaping (String) -> Void) {
+            self.scan = scan; self.fail = fail
+        }
+
+        func dataScanner(_ scanner: DataScannerViewController, didAdd items: [RecognizedItem], allItems: [RecognizedItem]) {
+            for item in items {
+                if case .barcode(let barcode) = item, let value = barcode.payloadStringValue {
+                    scanner.stopScanning()
+                    scan(value)
+                    break
+                }
+            }
+        }
+        func dataScanner(_ scanner: DataScannerViewController, becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable) {
+            fail("Камера перестала быть доступна. Откройте сканер заново.")
+        }
+    }
+}
+
 struct YoruAccountView: View {
     enum Mode { case login, register, forgot, reset }
     @EnvironmentObject var store: AnimeStore
@@ -416,6 +574,7 @@ struct YoruAccountView: View {
     @State var note: String?
     @State var changing = false
     @State var confirmAll = false
+    @State private var scanLogin = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -426,6 +585,7 @@ struct YoruAccountView: View {
             }.padding(20)
         }
         .background(NightBackground()).presentationDetents([.large])
+        .sheet(isPresented: $scanLogin) { YoruQRApprovalView(account: account) }
         .task { if account.logged { await account.refreshMe() } }
     }
 
@@ -513,6 +673,9 @@ struct YoruAccountView: View {
         }
         VStack(alignment: .leading, spacing: 10) {
             Text("Устройства").font(.system(size: 16, weight: .bold)).foregroundStyle(Night.text)
+            Button { scanLogin = true } label: {
+                Label("Сканировать QR-код входа", systemImage: "qrcode.viewfinder")
+            }.buttonStyle(PillStyle())
             ForEach(account.devices) { dev in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {

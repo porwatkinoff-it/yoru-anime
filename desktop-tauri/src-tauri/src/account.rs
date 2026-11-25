@@ -36,6 +36,19 @@ pub struct Account {
     lock: tokio::sync::Mutex<()>,
     installing: AtomicBool,
     installed: Mutex<HashSet<String>>,
+    qr: Mutex<Option<LoginCode>>,
+}
+
+#[derive(Clone)]
+struct LoginCode {
+    id: String,
+    poll: String,
+    key: [u8; 32],
+    server: String,
+}
+
+impl LoginCode {
+    fn request(&self) -> Value { json!({ "id": self.id, "poll": self.poll }) }
 }
 
 fn now_ms() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0) }
@@ -84,7 +97,7 @@ impl Account {
         let file = dir.join("yoru-account.json");
         let st = fs::read(&file).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}));
         let http = reqwest::Client::builder().user_agent(UA).connect_timeout(Duration::from_secs(12)).build().expect("http");
-        Account { st: Mutex::new(st), file, http, lock: tokio::sync::Mutex::new(()), installing: AtomicBool::new(false), installed: Mutex::new(HashSet::new()) }
+        Account { st: Mutex::new(st), file, http, lock: tokio::sync::Mutex::new(()), installing: AtomicBool::new(false), installed: Mutex::new(HashSet::new()), qr: Mutex::new(None) }
     }
     fn get(&self, k: &str) -> String { s(&self.st.lock().unwrap()[k]) }
     fn edit(&self, f: impl FnOnce(&mut Map<String, Value>)) {
@@ -453,6 +466,8 @@ pub fn account_status(a: State<'_, Account>) -> Value {
 
 #[tauri::command]
 pub fn account_set_server(a: State<'_, Account>, server: String) -> bool {
+    let mut qr = a.qr.lock().unwrap();
+    *qr = None;
     let v = server.trim().to_string();
     a.edit(|m| { m.insert("server".into(), v.into()); });
     true
@@ -474,6 +489,61 @@ pub async fn account_sign_in(app: AppHandle, a: State<'_, Account>, login: Strin
     let j = a.call("/v1/login", json!({ "login": who, "auth": B64.encode(auth), "device": DEVICE }), false).await?;
     a.signed_in(&app, &j, &enc);
     Ok(json!({ "login": j["login"] }))
+}
+
+#[tauri::command]
+pub async fn account_qr_start(a: State<'_, Account>) -> R {
+    if a.logged() { return Err("Устройство уже подключено к аккаунту Yoru".into()); }
+    let server = a.main_base();
+    let reply = a.call("/v1/qr/start", json!({ "device": DEVICE }), false).await?;
+    let id = s(&reply["id"]);
+    let poll = s(&reply["poll"]);
+    let expires = reply["expiresIn"].as_u64().filter(|n| (1..=180).contains(n));
+    if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) ||
+        poll.len() != 43 || !poll.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err("Сервер Yoru не вернул QR-код".into());
+    }
+    let expires = expires.ok_or("Сервер Yoru не вернул срок действия QR-кода")?;
+    let key = random::<32>();
+    let qr = qrcode::QrCode::new(format!("yoru-pair:v1:{id}:{}", B64.encode(key)))
+        .map_err(|_| "Не удалось создать QR-код")?;
+    let modules: Vec<bool> = qr.to_colors().into_iter().map(|c| c == qrcode::types::Color::Dark).collect();
+    let mut pending = a.qr.lock().unwrap();
+    if a.logged() || a.main_base() != server { return Err("Откройте вход по QR-коду заново".into()); }
+    *pending = Some(LoginCode { id: id.clone(), poll, key, server });
+    Ok(json!({ "id": id, "shortCode": id[..6].to_ascii_uppercase(), "expiresIn": expires,
+               "width": qr.width(), "modules": modules }))
+}
+
+#[tauri::command]
+pub async fn account_qr_poll(app: AppHandle, a: State<'_, Account>, id: String) -> R {
+    let offer = a.qr.lock().unwrap().as_ref().filter(|q| q.id == id).cloned().ok_or("QR-код уже закрыт")?;
+    if a.logged() || a.main_base() != offer.server { return Err("Откройте вход по QR-коду заново".into()); }
+    let reply = a.call("/v1/qr/poll", offer.request(), false).await?;
+    if reply["status"].as_str() == Some("pending") { return Ok(json!({ "signedIn": false })); }
+    if reply["status"].as_str() != Some("approved") || s(&reply["token"]).is_empty() || s(&reply["login"]).is_empty() {
+        return Err("Сервер Yoru ответил неожиданно".into());
+    }
+    let enc = open(&s(&reply["sealedKey"]), &offer.key).filter(|key| key.len() == 32)
+        .ok_or("Не удалось прочитать ключ аккаунта. Откройте новый QR-код.")?;
+    let mut pending = a.qr.lock().unwrap();
+    if pending.as_ref().map(|q| q.id.as_str()) != Some(id.as_str()) || a.logged() || a.main_base() != offer.server {
+        return Err("QR-код уже закрыт".into());
+    }
+    *pending = None;
+    a.signed_in(&app, &reply, &enc);
+    Ok(json!({ "signedIn": true }))
+}
+
+#[tauri::command]
+pub async fn account_qr_cancel(a: State<'_, Account>, id: String) -> Result<(), String> {
+    let offer = {
+        let mut pending = a.qr.lock().unwrap();
+        if pending.as_ref().map(|q| q.id.as_str()) != Some(id.as_str()) { return Ok(()); }
+        pending.take().unwrap()
+    };
+    if offer.server == a.main_base() { let _ = a.call("/v1/qr/cancel", offer.request(), false).await; }
+    Ok(())
 }
 
 #[tauri::command]

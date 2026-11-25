@@ -373,19 +373,19 @@ struct MangaAccountsView: View {
     @Environment(\.webAuthenticationSession) var webAuth
     @State var leave: String?
     @State var shikiSheet = false
+    @State private var showServices = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack { Text("Аккаунты").font(.system(size: 22, weight: .bold)).foregroundStyle(.white); Spacer(); Button("Закрыть") { dismiss() }.buttonStyle(NightButtonStyle()) }
                 YoruAccountCard()
-                Text("Аниме и манга входят отдельно — можно быть во всех аккаунтах сразу. Пароли не сохраняются: для Anime 365 хранится только токен, MangaLib и Com-X входят на страницах своих сайтов. С аккаунтом Yoru входы зашифрованы вашим паролем и появляются на других устройствах сами.")
-                    .font(.system(size: 13)).foregroundStyle(Night.meta)
-                row("Anime 365", icon: "play.tv.fill", status: store.token.isEmpty ? "Не выполнен вход · без входа видео не играет" : (store.account.isEmpty ? "Вход выполнен" : store.account), logged: !store.token.isEmpty, login: { anime = true }, logout: nil)
-                row("MangaLib", icon: "book.fill", status: accounts.libLogged ? (accounts.libName.isEmpty ? "Вход выполнен" : accounts.libName) : "Не выполнен вход · без входа скрыты тайтлы 18+", logged: accounts.libLogged, login: { libProvider = nil; lib = true }, logout: { if yoru.logged { leave = "mangalib" } else { accounts.libLogout() } },
-                    alt: [("Через VK", { libProvider = "vkontakte"; lib = true }), ("Через Яндекс", { libProvider = "yandex"; lib = true })])
-                row("Com-X", icon: "books.vertical.fill", status: accounts.comxLogged ? "Вход выполнен" : "Не выполнен вход · читать можно и без него", logged: accounts.comxLogged, login: { comx = true }, logout: { if yoru.logged { leave = "comx" } else { Task { await accounts.comxLogout() } } })
-                row("Шикимори", icon: "star.bubble.fill", status: shiki.signedIn ? "\(shiki.nickname) · оценки и просмотренные серии уходят в ваш список" : "Не выполнен вход · оценки и список просмотренного",
-                    logged: shiki.signedIn, login: { shikiSheet = true }, logout: { shiki.signOut() })
+                DisclosureGroup(isExpanded: $showServices) {
+                    serviceAccounts.padding(.top, 10)
+                } label: {
+                    Text("Аккаунты сервисов").font(.system(size: 17, weight: .semibold))
+                }
+                .padding(14).background(Night.panel, in: RoundedRectangle(cornerRadius: 16))
+                .tint(Night.text).foregroundStyle(Night.text)
             }.padding(20)
         }
         .background(NightBackground()).presentationDetents([.large])
@@ -398,6 +398,16 @@ struct MangaAccountsView: View {
             Button("Только на этом устройстве") { Task { await signOut(svc) } }
             Button("На всех устройствах аккаунта", role: .destructive) { yoru.forgetEverywhere(svc); Task { await signOut(svc) } }
         } message: { _ in Text("Вход сохранён в аккаунте Yoru. Выход на всех устройствах удалит его из аккаунта.") }
+    }
+    private var serviceAccounts: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            row("Anime 365", icon: "play.tv.fill", status: store.token.isEmpty ? "Не выполнен вход · без входа видео не играет" : (store.account.isEmpty ? "Вход выполнен" : store.account), logged: !store.token.isEmpty, login: { anime = true }, logout: nil)
+            row("MangaLib", icon: "book.fill", status: accounts.libLogged ? (accounts.libName.isEmpty ? "Вход выполнен" : accounts.libName) : "Не выполнен вход · без входа скрыты тайтлы 18+", logged: accounts.libLogged, login: { libProvider = nil; lib = true }, logout: { if yoru.logged { leave = "mangalib" } else { accounts.libLogout() } },
+                alt: [("Через VK", { libProvider = "vkontakte"; lib = true }), ("Через Яндекс", { libProvider = "yandex"; lib = true })])
+            row("Com-X", icon: "books.vertical.fill", status: accounts.comxLogged ? "Вход выполнен" : "Не выполнен вход · читать можно и без него", logged: accounts.comxLogged, login: { comx = true }, logout: { if yoru.logged { leave = "comx" } else { Task { await accounts.comxLogout() } } })
+            row("Шикимори", icon: "star.bubble.fill", status: shiki.signedIn ? "\(shiki.nickname) · оценки и просмотренные серии уходят в ваш список" : "Не выполнен вход · оценки и список просмотренного",
+                logged: shiki.signedIn, login: { shikiSheet = true }, logout: { shiki.signOut() })
+        }
     }
     func signOut(_ svc: String) async {
         switch svc {

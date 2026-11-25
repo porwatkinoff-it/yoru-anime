@@ -12,6 +12,10 @@ Yoru Anime (formerly Night Anime) native client © 2026. GPL-3.0-or-later; see L
   https://code.videolan.org/videolan/libvlcjni
   https://code.videolan.org/videolan/vlc
   Maven artifact: org.videolan.android:libvlc-all:3.6.5.
+- **Android QR generation**: ZXing Core 3.5.4, Apache-2.0;
+  https://github.com/zxing/zxing.
+- **Desktop QR generation**: qrcode-rust 0.14.1, MIT or Apache-2.0;
+  https://github.com/kennytm/qrcode-rust.
 - **ASS rendering** is provided by the bundled VLC/libass stack, not a replacement
   plain-text subtitle parser. Original library notices and symbols are retained.
 - API schema: https://smotret-anime.app/api/openapi.yaml (Anime 365).

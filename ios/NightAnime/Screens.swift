@@ -352,7 +352,7 @@ struct Hero: View {
     var body: some View {
         if store.shelfErrors[Shelves.airing] != nil {
             VStack(spacing: 12) {
-                EmptyState(icon: "wifi.slash", title: "Нет связи с Anime 365", text: store.shelfErrors[Shelves.airing] ?? "")
+                EmptyState(icon: "exclamationmark.circle", title: "Каталог Anime 365 недоступен", text: store.shelfErrors[Shelves.airing] ?? "")
                 HStack(spacing: 10) {
                     Button("Повторить") { Task { store.shelfErrors[Shelves.airing] = nil; await store.loadShelf(Shelves.airing) } }.buttonStyle(PillStyle(primary: true))
                     Button("Мои загрузки") { store.tab = 3 }.buttonStyle(PillStyle())

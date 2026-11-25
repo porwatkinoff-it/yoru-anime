@@ -162,6 +162,8 @@ body.keys .card.kf .t { color: var(--accent); }
 
 /* Аккаунт */
 .panel { background: var(--surface); border-radius: 18px; padding: 24px; max-width: 520px; margin-bottom: 18px; border: 1px solid var(--stroke); }
+.account-services-toggle { cursor: pointer; font-size: 16px; font-weight: 600; }
+#service-accounts:not([open]) > :not(summary) { display: none; }
 .panel h2 { margin: 0 0 6px; font-size: 20px; }
 .panel p { color: var(--muted); margin: 0 0 16px; line-height: 1.5; }
 .field { display: block; margin-bottom: 12px; }

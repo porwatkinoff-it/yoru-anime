@@ -115,7 +115,7 @@ let kf = null;
 function markFocus(el) { kf?.classList.remove('kf'); kf = el; el?.classList.add('kf'); }
 document.addEventListener('focusin', e => { if (document.body.classList.contains('keys')) markFocus(e.target); });
 const DIRS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-const focusable = 'button:not([disabled]), a[href], input, select, [tabindex]:not([tabindex="-1"])';
+const focusable = 'button:not([disabled]), a[href], input, select, details > summary, [tabindex]:not([tabindex="-1"])';
 function moveFocus([dx, dy]) {
   const scope = $('.modal-back') || document;
   const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
@@ -357,13 +357,14 @@ function paintAccount() {
   $('#account-button .who').textContent = account ? account.name : 'Аккаунты';
   $('#account-button .avatar').textContent = account ? account.name.trim().charAt(0).toUpperCase() : '';
 }
-function Account(_r, alive) {
+function Account(route, alive) {
   const page = document.createElement('div'); page.className = 'page'; main.append(page);
   const draw = async () => {
     const signed = await window.yoru.signedIn();
     const version = await window.yoru.version();
     if (!alive()) return;
-    page.innerHTML = `<div class="page-head"><h1>Аккаунты</h1></div><div id="yoru-acc"></div>` + (signed ? `<div class="panel"><h2>Anime 365</h2>
+    page.innerHTML = `<div class="page-head"><h1>Аккаунты</h1></div><div id="yoru-acc"></div>
+      <details id="service-accounts" ${route.servicesOpen ? 'open' : ''}><summary class="panel account-services-toggle">Аккаунты сервисов</summary>` + (signed ? `<div class="panel"><h2>Anime 365</h2>
       <div class="kv"><span>Аккаунт</span><b>${esc(account?.name || 'Вход выполнен')}</b></div>
       <div class="kv"><span>Подписка</span><b>${account?.premium ? 'Активна' + (account.until ? ' до ' + account.until.toLocaleDateString('ru') : '') : account?.premium === false ? 'Нет' : '…'}</b></div>
       <div class="actions" style="margin-top:16px"><button class="btn" id="site">${icon.globe}Anime 365</button><button class="btn" id="logout">Выйти</button></div></div>
@@ -372,7 +373,9 @@ function Account(_r, alive) {
       <label class="field"><span>Почта</span><input name="email" type="email" autocomplete="username" required></label>
       <label class="field"><span>Пароль</span><input name="password" type="password" autocomplete="current-password" required></label>
       <p class="error" hidden></p><button class="btn primary" type="submit">Войти</button></form>`) +
-      `<div id="shiki-acc"></div><div id="manga-acc"></div><div class="panel"><h2>Yoru ${esc(version)}</h2><p id="upd-text">Обновления проверяются автоматически.</p><div class="actions"><button class="btn" id="check">Проверить обновления</button></div></div>`;
+      `<div id="shiki-acc"></div><div id="manga-acc"></div></details><div class="panel"><h2>Yoru ${esc(version)}</h2><p id="upd-text">Обновления проверяются автоматически.</p><div class="actions"><button class="btn" id="check">Проверить обновления</button></div></div>`;
+    const services = $('#service-accounts', page);
+    services.addEventListener('toggle', () => { route.servicesOpen = services.open; });
     $('#site', page)?.addEventListener('click', () => window.yoru.openExternal('https://smotret-anime.app/'));
     $('#logout', page)?.addEventListener('click', async () => { if (!await Acc.askLogout('anime365', 'Anime 365')) return; await window.yoru.logout(); account = null; paintAccount(); draw(); });
     $('#login', page)?.addEventListener('submit', async e => {

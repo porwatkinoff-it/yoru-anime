@@ -269,7 +269,13 @@ final class MangaUi {
  // ───────────── Аккаунты ─────────────
  void accounts(){
   LinearLayout body=a.page();body.addView(a.header("Аккаунты",true));a.gap(body,8);
-  YoruUi.card(a,body);
+  Button focus=YoruUi.card(a,body);
+  a.panel(body).addView(a.pill("Аккаунты сервисов ›",false,()->a.push(this::serviceAccounts)));
+  TextView v=a.text("Yoru "+a.version(),12,MUTED);v.setPadding(a.side(),dp(14),a.side(),0);body.addView(v);
+  if(a.tv)focus.post(focus::requestFocus);
+ }
+ void serviceAccounts(){
+  LinearLayout body=a.page();body.addView(a.header("Аккаунты сервисов",true));a.gap(body,8);
   boolean anime=!Api.token(a).isEmpty();
   LinearLayout p=a.panel(body);p.addView(a.bold("Anime 365",18,TEXT));a.gap(p,4);
   p.addView(a.text(anime?"Вход выполнен. Список и история синхронизируются между устройствами.":"Нужен для аниме: с подпиской видео в хорошем качестве и загрузки серий.",14,MUTED));a.gap(p,10);
@@ -294,7 +300,6 @@ final class MangaUi {
   c.addView(a.text(cx?"Вход выполнен":"Вход нужен для глав, которые Com-X показывает только участникам.",14,cx?SCORE_HIGH:MUTED));a.gap(c,10);
   LinearLayout r3=a.row();r3.addView(cx?a.pill("Выйти",false,()->YoruUi.leave(a,"comx",()->{Manga.comxLogout();details.clear();a.refresh();})):a.pill("Войти",true,this::comxLogin));c.addView(r3);
   shikiPanel(body);
-  TextView v=a.text("Yoru "+a.version(),12,MUTED);v.setPadding(a.side(),dp(14),a.side(),0);body.addView(v);
   if(a.tv)focus.post(focus::requestFocus);
  }
  // Шикимори: оценки и просмотренное уходят в список на сайте и возвращаются обратно.
@@ -331,7 +336,7 @@ final class MangaUi {
  }
  // Вход на Шикимори в окне приложения: после разрешения сайт уходит на yoru://shikimori?code=…, окно ловит адрес и закрывается.
  void shikiLogin(){
-  if(!Shikimori.configured(a)){a.push(this::accounts);return;}
+  if(!Shikimori.configured(a)){a.push(this::serviceAccounts);return;}
   WebView w=web();Dialog[] dl=new Dialog[1];boolean[] handled={false};
   w.setWebViewClient(new WebViewClient(){
    boolean check(WebView v,String url){

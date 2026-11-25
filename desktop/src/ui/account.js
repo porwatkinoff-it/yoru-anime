@@ -183,8 +183,10 @@ async function draw(el, s) {
   if (!s.signedIn) {
     me = null;
     el.innerHTML = `<h2>Аккаунт Yoru</h2><p>Войдите, чтобы история и загрузки не пропадали при переустановке и были общими на iPhone, Android, ТВ и Mac. Для регистрации нужен код приглашения.</p>
-      <div class="actions"><button class="btn primary" data-a="in">Войти</button><button class="btn" data-a="reg">Регистрация</button><button class="btn" data-a="server">Сервер</button></div>`;
+      <div class="actions"><button class="btn primary" data-a="in">Войти</button>${A().qrStart ? '<button class="btn" data-a="qr">Войти по QR-коду</button>' : ''}<button class="btn" data-a="reg">Регистрация</button><button class="btn" data-a="server">Сервер</button></div>`;
     $('[data-a=in]', el).onclick = signIn;
+    const qr = $('[data-a=qr]', el);
+    if (qr) qr.onclick = signInQR;
     $('[data-a=reg]', el).onclick = register;
     $('[data-a=server]', el).onclick = () => server(s);
     return;
@@ -229,6 +231,58 @@ async function afterSignIn(text) {
   me = null; signed = true; toast(text);
   await status();
   await syncNow();
+}
+
+async function signInQR() {
+  const m = modal(`<h3>Вход по QR-коду</h3>
+    <p class="hint">В Yoru на iPhone откройте аккаунт Yoru и нажмите «Сканировать QR-код входа».</p>
+    <canvas aria-label="QR-код входа" hidden></canvas>
+    <p class="hint" role="status">Создаём QR-код…</p>
+    <div class="actions"><button class="btn" data-a="cancel">Закрыть</button></div>`);
+  const canvas = m.el.querySelector('canvas');
+  const notice = m.el.querySelector('[role=status]');
+  let id, timer;
+  $('[data-a=cancel]', m.el).onclick = m.close;
+  const watch = new MutationObserver(() => {
+    if (m.el.isConnected) return;
+    watch.disconnect();
+    clearTimeout(timer);
+    if (id) A().qrCancel(id);
+  });
+  watch.observe(m.el.parentNode, { childList: true });
+
+  const result = await A().qrStart();
+  id = result.data?.id;
+  if (!m.el.isConnected) { if (id) A().qrCancel(id); return; }
+  if (result.error) { notice.textContent = result.error; return; }
+  const { width, modules, shortCode, expiresIn } = result.data;
+  const scale = Math.floor(300 / (width + 8));
+  canvas.width = canvas.height = (width + 8) * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#000';
+  for (const [i, dark] of modules.entries()) {
+    if (dark) ctx.fillRect((i % width + 4) * scale, (Math.floor(i / width) + 4) * scale, scale, scale);
+  }
+  canvas.hidden = false;
+  notice.textContent = `Код для сверки: ${shortCode}. Ожидаем подтверждения…`;
+  const until = performance.now() + expiresIn * 1000;
+  async function check() {
+    if (!m.el.isConnected) return;
+    if (performance.now() >= until) {
+      canvas.hidden = true;
+      notice.textContent = 'QR-код истёк. Закройте окно и откройте новый код.';
+      A().qrCancel(id);
+      return;
+    }
+    const next = await A().qrPoll(id);
+    if (!m.el.isConnected) return;
+    if (next.data?.signedIn) { id = null; m.close(); await afterSignIn('Вы вошли в аккаунт Yoru'); return; }
+    if (next.error) { canvas.hidden = true; notice.textContent = next.error; A().qrCancel(id); return; }
+    timer = setTimeout(check, 2000);
+  }
+  timer = setTimeout(check, 1500);
 }
 
 function signIn() {

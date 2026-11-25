@@ -387,6 +387,7 @@ fn main() {
             manga::comx, manga::comx_status, manga::comx_login, manga::comx_logout,
             manga::manga_save, manga::manga_cancel, manga::manga_saved, manga::manga_delete,
             account::account_status, account::account_set_server, account::account_register, account::account_sign_in,
+            account::account_qr_start, account::account_qr_poll, account::account_qr_cancel,
             account::account_forgot, account::account_reset, account::account_me, account::account_verify_email, account::account_resend,
             account::account_change_email, account::account_change_password, account::account_sign_out, account::account_remove_device,
             account::account_delete, account::account_forget, account::account_sync,

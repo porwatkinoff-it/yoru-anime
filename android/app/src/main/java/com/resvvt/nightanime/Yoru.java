@@ -139,6 +139,44 @@ final class Yoru {
   JSONObject j=call(c,"/v1/login",new JSONObject().put("login",who).put("auth",b64(k[0])).put("device",deviceName(c)),false);
   signedIn(c,j,k[1]);
  }
+ static final class LoginCode{
+  final String id,poll,server;
+  final byte[] key;
+  final long until;
+  LoginCode(String id,String poll,String server,int seconds){
+   this.id=id;this.poll=poll;this.server=server;key=random(32);
+   until=SystemClock.elapsedRealtime()+seconds*1000L;
+  }
+  String payload(){return "yoru-pair:v1:"+id+":"+b64(key);}
+  String shortCode(){return id.substring(0,6).toUpperCase(Locale.ROOT);}
+  JSONObject request()throws JSONException{return new JSONObject().put("id",id).put("poll",poll);}
+ }
+ static LoginCode beginQr(Context c)throws Exception{
+  String server=main(c);
+  JSONObject response=call(c,"/v1/qr/start",new JSONObject().put("device",deviceName(c)),false);
+  String id=response.optString("id"),poll=response.optString("poll");
+  int seconds=response.optInt("expiresIn");
+  if(!id.matches("[0-9a-f]{32}")||!poll.matches("[A-Za-z0-9_-]{43}")||seconds<1||seconds>180)
+   throw new Fail("Сервер Yoru не вернул QR-код.");
+  return new LoginCode(id,poll,server,seconds);
+ }
+ static JSONObject pollQr(Context c,LoginCode code)throws Exception{
+  if(logged(c)||!code.server.equals(main(c)))throw new Fail("Откройте вход по QR-коду заново.");
+  JSONObject response=call(c,"/v1/qr/poll",code.request(),false);
+  if("pending".equals(response.optString("status")))return null;
+  if(!"approved".equals(response.optString("status"))||response.optString("token").isEmpty()||response.optString("login").isEmpty())
+   throw new Fail("Сервер Yoru ответил неожиданно.");
+  return response;
+ }
+ static void finishQr(Context c,LoginCode code,JSONObject response)throws Exception{
+  if(logged(c)||!code.server.equals(main(c)))throw new Fail("Откройте вход по QR-коду заново.");
+  byte[] key=open(response.optString("sealedKey"),code.key);
+  if(key==null||key.length!=32)throw new Fail("Не удалось прочитать ключ аккаунта. Откройте новый QR-код.");
+  signedIn(c,response,key);
+ }
+ static void cancelQr(Context c,LoginCode code){
+  if(code.server.equals(main(c)))try{call(c,"/v1/qr/cancel",code.request(),false);}catch(Exception ignored){}
+ }
  static String forgot(Context c,String who)throws Exception{return call(c,"/v1/forgot",new JSONObject().put("login",who),false).optString("note","Если у аккаунта подтверждена почта, на неё отправлен код.");}
  // Новый пароль по коду из письма. Входы в сервисы были зашифрованы старым паролем — их придётся повторить.
  static void reset(Context c,String who,String code,String password)throws Exception{

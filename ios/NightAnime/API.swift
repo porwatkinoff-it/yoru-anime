@@ -150,11 +150,46 @@ enum Vault {
         var p = params; if authenticated { guard !token.isEmpty else { throw APIError(message: "Войдите в аккаунт Anime 365") }; p["access_token"] = token }
         c.queryItems = (c.queryItems ?? []) + p.map { URLQueryItem(name: $0.key, value: $0.value) }
         var r = URLRequest(url: c.url!); r.setValue("NightAnime/1.0 (iOS)", forHTTPHeaderField: "User-Agent"); r.cachePolicy = .reloadIgnoringLocalCacheData
-        let data: Data
-        do { (data, _) = try await session.data(for: r) } catch { throw APIError(message: "Не удалось подключиться к Anime 365. Проверьте интернет и повторите.") }
-        guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw APIError(message: "Сайт вернул неожиданный ответ. Повторите позже.") }
-        if let e = j["error"] as? [String: Any] { throw APIError(message: e["message"] as? String ?? "Ошибка Anime 365") }
+        let (data, response) = try await fetchAPI(r, retryInterrupted: path == "series" && !authenticated)
+        let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if let e = j?["error"] as? [String: Any] { throw APIError(message: e["message"] as? String ?? "Ошибка Anime 365") }
+        if response.statusCode == 429 { throw APIError(message: "Anime 365 ограничил частоту запросов. Повторите чуть позже.") }
+        if !(200..<300).contains(response.statusCode) {
+            throw APIError(message: "Anime 365 ответил ошибкой HTTP \(response.statusCode).")
+        }
+        if response.url?.path == "/users/login" {
+            throw APIError(message: "Anime 365 перенаправил запрос приложения на страницу входа.")
+        }
+        guard let j else { throw APIError(message: "Anime 365 вернул ответ в неверном формате. Повторите позже.") }
         guard let result = j["data"] else { throw APIError(message: "Пустой ответ Anime 365") }; return result
+    }
+    private func fetchAPI(_ request: URLRequest, retryInterrupted: Bool) async throws -> (Data, HTTPURLResponse) {
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw APIError(message: "Не удалось прочитать ответ Anime 365.") }
+            return (data, http)
+        } catch let error as URLError {
+            if error.code == .cancelled { throw error }
+            if error.code == .networkConnectionLost && retryInterrupted {
+                try Task.checkCancellation()
+                return try await fetchAPI(request, retryInterrupted: false)
+            }
+            switch error.code {
+            case .dataNotAllowed:
+                throw APIError(message: "Сотовые данные для Yoru недоступны. Проверьте «Настройки → Сотовая связь» или подключитесь к Wi-Fi.")
+            case .notConnectedToInternet:
+                throw APIError(message: "У Yoru нет доступа к интернету. Проверьте Wi-Fi или разрешение на сотовые данные для приложения.")
+            case .cannotFindHost, .dnsLookupFailed:
+                throw APIError(message: "Текущая сеть не находит адрес Anime 365 (DNS).")
+            case .timedOut:
+                throw APIError(message: "Anime 365 не ответил вовремя. Попробуйте ещё раз.")
+            case .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted,
+                 .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid, .appTransportSecurityRequiresSecureConnection:
+                throw APIError(message: "Не удалось установить защищённое соединение с Anime 365.")
+            default:
+                throw APIError(message: "Не удалось подключиться к Anime 365 (код сети \(error.errorCode)).")
+            }
+        }
     }
     func login(_ email: String, _ password: String, _ app: String) async throws {
         let d = try await request("login", ["email": email, "password": password, "app": app]) as? [String: Any]

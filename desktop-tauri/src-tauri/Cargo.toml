@@ -1,6 +1,6 @@
 [package]
 name = "yoru-anime"
-version = "2.3.4+1"
+version = "2.3.4+2"
 edition = "2021"
 
 [build-dependencies]
@@ -20,6 +20,7 @@ getrandom = "0.2"
 encoding_rs = "0.8"
 flate2 = "1"
 percent-encoding = "2"
+qrcode = { version = "0.14.1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1,7 +1,16 @@
 package com.resvvt.nightanime;
 import android.app.AlertDialog;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.view.*;
 import android.widget.*;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.*;
 import static com.resvvt.nightanime.MainActivity.*;
 
@@ -13,11 +22,18 @@ final class YoruUi {
  static Field f(String hint,int type){return new Field(hint,type);}
 
  // Карточка над входами в сервисы.
- static void card(MainActivity a,LinearLayout body){
+ static Button card(MainActivity a,LinearLayout body){
   boolean logged=Yoru.logged(a);
   LinearLayout p=a.panel(body);p.addView(a.bold("Аккаунт Yoru",18,TEXT));a.gap(p,4);
   p.addView(a.text(status(a),14,logged&&Yoru.error==null?SCORE_HIGH:MUTED));a.gap(p,10);
-  LinearLayout r=a.row();r.addView(a.pill(logged?"Открыть":"Войти",!logged,()->a.push(()->screen(a))));p.addView(r);
+  Button action=a.pill(logged?"Открыть":"Войти",!logged,()->a.push(()->screen(a)));
+  LinearLayout r=a.row();r.addView(action);
+  if(a.tv&&!logged){
+   space(a,r);
+   r.addView(a.pill("Войти по QR-коду",false,()->new QRLogin(a).show()));
+  }
+  p.addView(r);
+  return action;
  }
  static String status(MainActivity a){
   if(!Yoru.logged(a))return "История, избранное, чтение манги и входы в сервисы сохранятся в аккаунте — и после переустановки, и на iPhone, ТВ и Mac.";
@@ -39,6 +55,8 @@ final class YoruUi {
     new Field[]{f("Логин",TEXT_IN),f("Почта",EMAIL_IN),f("Код приглашения",TEXT_IN),f("Пароль (от 8 символов)",PASS_IN),f("Повторите пароль",PASS_IN)},v->{
      if(v[0].isEmpty())throw new Yoru.Fail("Введите логин");check(v[3],v[4]);Yoru.register(a,v[0],v[1],v[2],v[3]);return null;})));
    p.addView(r);a.gap(p,8);
+   p.addView(a.pill("Войти по QR-коду",false,()->new QRLogin(a).show()));
+   a.gap(p,8);
    LinearLayout r2=a.row();
    r2.addView(a.pill("Забыли пароль?",false,()->form(a,"Восстановление пароля","Прислать код","Код придёт на почту, подтверждённую в аккаунте.",new Field[]{f("Логин или почта",TEXT_IN)},v->{
     if(v[0].isEmpty())throw new Yoru.Fail("Введите логин");String note=Yoru.forgot(a,v[0]);a.runOnUiThread(()->resetForm(a,v[0],note));return null;})));
@@ -113,6 +131,95 @@ final class YoruUi {
  }
  interface Job{String run()throws Exception;}
  static void work(MainActivity a,Job j){a.io.execute(()->{try{String m=j.run();a.runOnUiThread(()->{if(m!=null)Toast.makeText(a,m,Toast.LENGTH_SHORT).show();a.renderTabs();a.refresh();});}catch(Exception e){a.runOnUiThread(()->a.alert(e.getMessage()));}});}
+
+ private static final class QRLogin{
+  final MainActivity a;
+  final Handler handler=new Handler(Looper.getMainLooper());
+  final AtomicBoolean active=new AtomicBoolean(true);
+  final ImageView image;
+  final TextView message;
+  final AlertDialog dialog;
+  volatile Yoru.LoginCode code;
+
+  QRLogin(MainActivity a){
+   this.a=a;
+   LinearLayout body=new LinearLayout(a);
+   body.setOrientation(LinearLayout.VERTICAL);
+   body.setGravity(Gravity.CENTER_HORIZONTAL);
+   body.setPadding(a.dp(22),a.dp(14),a.dp(22),a.dp(10));
+   body.addView(a.text("На iPhone откройте аккаунт Yoru и нажмите «Сканировать QR-код входа».",14,TEXT));
+   image=new ImageView(a);
+   image.setContentDescription("QR-код входа");
+   int size=Math.min(a.dp(250),a.getResources().getDisplayMetrics().widthPixels-a.dp(96));
+   body.addView(image,new LinearLayout.LayoutParams(size,size));
+   image.setVisibility(View.GONE);
+   message=a.text("Создаём QR-код…",14,MUTED);
+   body.addView(message);
+   dialog=new AlertDialog.Builder(a).setTitle("Вход по QR-коду").setView(body).setNegativeButton("Закрыть",null).create();
+   dialog.setOnDismissListener(ignored->{
+    if(active.getAndSet(false)){
+     handler.removeCallbacksAndMessages(null);
+     Yoru.LoginCode pending=code;
+     if(pending!=null)a.io.execute(()->Yoru.cancelQr(a,pending));
+    }
+   });
+  }
+
+  void show(){
+   dialog.show();
+   dialog.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus();
+   a.io.execute(()->{
+    try{
+     Yoru.LoginCode created=Yoru.beginQr(a);
+     code=created;
+     if(!active.get()){Yoru.cancelQr(a,created);return;}
+     BitMatrix matrix=new QRCodeWriter().encode(created.payload(),BarcodeFormat.QR_CODE,384,384);
+     int width=matrix.getWidth(),height=matrix.getHeight();
+     int[] pixels=new int[width*height];
+     for(int y=0;y<height;y++)for(int x=0;x<width;x++)pixels[y*width+x]=matrix.get(x,y)?Color.BLACK:Color.WHITE;
+     Bitmap bitmap=Bitmap.createBitmap(pixels,width,height,Bitmap.Config.ARGB_8888);
+     a.runOnUiThread(()->{
+      if(!active.get())return;
+      image.setImageBitmap(bitmap);
+      image.setVisibility(View.VISIBLE);
+      message.setText("Код для сверки: "+created.shortCode()+". Ожидаем подтверждения…");
+      handler.postDelayed(this::poll,1500);
+     });
+    }catch(Exception e){fail(e);}
+   });
+  }
+
+  void poll(){
+   if(!active.get()||a.isFinishing()||a.isDestroyed())return;
+   if(SystemClock.elapsedRealtime()>=code.until){fail(new Yoru.Fail("QR-код истёк. Откройте новый код."));return;}
+   a.io.execute(()->{
+    if(!active.get())return;
+    try{
+     JSONObject response=Yoru.pollQr(a,code);
+     if(response==null){if(active.get())handler.postDelayed(this::poll,2000);return;}
+     if(!active.compareAndSet(true,false))return;
+     Yoru.finishQr(a,code,response);
+     a.runOnUiThread(()->{
+      if(a.isFinishing()||a.isDestroyed())return;
+      if(dialog.isShowing())dialog.dismiss();
+      Toast.makeText(a,"Вы вошли в аккаунт Yoru",Toast.LENGTH_SHORT).show();
+      a.renderTabs();
+      a.refresh();
+     });
+    }catch(Exception e){fail(e);}
+   });
+  }
+
+  void fail(Exception error){
+   handler.removeCallbacksAndMessages(null);
+   if(active.getAndSet(false)&&code!=null)a.io.execute(()->Yoru.cancelQr(a,code));
+   a.runOnUiThread(()->{
+    if(!dialog.isShowing())return;
+    image.setVisibility(View.GONE);
+    message.setText(error.getMessage()==null?"Не удалось войти по QR-коду.":error.getMessage());
+   });
+  }
+ }
 
  // Выход из сервиса: если вход сохранён в аккаунте Yoru — спросить, выходить ли на всех устройствах.
  static void leave(MainActivity a,String svc,Runnable signOut){
